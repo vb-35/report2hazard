@@ -1,0 +1,35 @@
+# Python environments and generated caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Credentials and local editor/agent state
+.env
+.env.*
+!.env.example
+.agents/
+.codex_tmp/
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Local reports, generated results, and scratch work
+/results/
+/artifacts*/
+/outputs/
+/tmp/
+/tmp_single_input/
+/FAI/
+/Schnannerbach/
+/Translation resources/*.pdf
+/*.traineddata
+/multi-agent-first-draft.md

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Runs · Multi-hazard review{% endblock %}
+{% block content %}
+<div class="hero"><p class="eyebrow">MULTI-HAZARD WORKSPACE</p>
+<h1>From report to causal chain.</h1>
+<p>Upload your report, review the extracted events, and download your approved results.</p></div>
+<ol class="steps"><li><strong>1. Add a report</strong><span>PDF, Word, or plain text</span></li><li><strong>2. Review the results</strong><span>Check events and source evidence</span></li><li><strong>3. Approve & download</strong><span>Export a CSV or JSON file</span></li></ol>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+<section class="panel" aria-labelledby="create-heading">
+  <h2 id="create-heading">Start a new report</h2>
+  <form id="upload-form" method="post" action="{{ url_for('start_run') }}" enctype="multipart/form-data">
+    <label class="upload-zone">Choose your report files
+      <input type="file" name="files" accept=".docx,.pdf,.txt" multiple>
+      <span class="hint">DOCX, PDF, TXT · Up to 100 MB per upload</span>
+    </label>
+    <p class="hint">Select multiple files only if they belong to the same report. PDF event collections are checked for separate reports automatically.</p>
+    <details><summary>Use a folder on this computer instead</summary>
+    <label>Existing input directory
+      <input type="text" name="input_dir" placeholder="C:\reports\one-report">
+    </label>
+    </details>
+    <p id="upload-message" role="status" aria-live="polite"></p>
+    <button type="submit">Extract report →</button>
+  </form>
+</section>
+
+<section aria-labelledby="prior-heading">
+  <h2 id="prior-heading">Your reports</h2>
+  {% if runs %}
+  <div class="run-list">
+    {% for run in runs %}
+    <a class="run-card state-{{ run.status }}" href="{{ url_for('run_detail', run_id=run.run_id) }}">
+      <strong>{{ run.inputs | map(attribute='filename') | join(', ') or run.run_id }}</strong>
+      <span class="badge">{{ status_labels.get(run.status, run.status) }}</span>
+      <span>{{ run.current_stage | replace('_', ' ') | title }} · {{ run.progress or 0 }}%</span>
+      <small>{{ run.run_id }}</small>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}<div class="empty-state"><strong>Your first report starts here.</strong><p>Choose a file above. Your results will appear here so you can return to them later.</p></div>{% endif %}
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}" defer></script>{% endblock %}

@@ -1,0 +1,6 @@
+python-docx
+pdfplumber
+pypdf
+jsonschema
+Flask
+pytest
