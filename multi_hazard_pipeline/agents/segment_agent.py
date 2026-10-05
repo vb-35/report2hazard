@@ -6,6 +6,7 @@ from typing import Any
 from ..config import PipelineConfig
 from ..core import normalize_text
 from ..errors import PipelineError
+from ..language import language_prompt_context
 from ..llm import ChatClient
 from ..schemas import (
     CitationQuoteMismatch,
@@ -25,7 +26,7 @@ Rules:
 - Order segments by causal order, not document order. Use contiguous causal_order values beginning at 1. segment is a positive integer ID; Python preserves IDs for unchanged steps across revisions.
 - predecessor_segment_ids may be empty; otherwise cite only real, earlier segment numbers that directly enable the step.
 - Every segment needs at least one evidence citation. Use only supplied chunk IDs and copy an exact quote or a whitespace-normalized substring from that chunk.
-- Use translated_text for semantic interpretation. event and process must always be written in English.
+- Use translated_text for semantic interpretation. When translation_applied is false, this is original-language passthrough: interpret all minority-language passages directly, including German, French, Italian, and mixed text. Do not omit them. event and process must always be written in English.
 - Evidence quote must remain in the original source language: copy it only from the chunk's text field, never from translated_text.
 - PDF extraction may contain replacement characters (�) or broken words. Quote a short contiguous fragment exactly as supplied in text; do not repair its spelling or accents in the quote.
 - Merge repeated descriptions and quantities for the same causal step and retain every useful citation. Merge a cause with its immediate consequence only when the reference abstraction treats them as one statement.
@@ -276,6 +277,7 @@ def collect_segments_from_chunks(
     max_chars: int,
     starting_batch_index: int = 1,
     correction_instruction: str | None = None,
+    language_context: dict[str, Any] | None = None,
 ) -> int:
     batch_index = starting_batch_index
     for batch in batch_chunks(chunks, max_chars):
@@ -305,6 +307,11 @@ def collect_segments_from_chunks(
                 "doc_id": doc_id,
                 "batch_index": batch_index,
                 "chunks": batch,
+                "language_context": {
+                    "decision": (language_context or {}).get("decision", "legacy_english_translation"),
+                    "chunks": {chunk["chunk_id"]: (language_context or {}).get("chunks", {}).get(chunk["chunk_id"], {})
+                               for chunk in batch},
+                },
                 "correction_instruction": normalize_text(correction_instruction or "") or None,
             },
             validate=validate,
@@ -333,6 +340,7 @@ def segment_agent(
         segments=preliminary,
         max_chars=max_chars,
         correction_instruction=correction_instruction,
+        language_context=language_prompt_context(source),
     )
     preliminary = consolidate_exact_duplicates(preliminary)
     validate_segment_chain({"segments": preliminary}, source)

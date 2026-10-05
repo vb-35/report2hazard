@@ -10,6 +10,7 @@ from .agents import review_agent
 from .config import DEFAULT_CONFIG, PipelineConfig
 from .core import normalize_text, read_json, run_lock, write_csv, write_json
 from .errors import PipelineError
+from .language import language_summary, recorded_language_config
 from .llm import ChatClient
 from .pipeline import (
     correct_until_terminal,
@@ -218,6 +219,8 @@ def validate_comment_segments(comments: list[dict[str, Any]], candidate: dict[st
 def record_operation_failure(
     run_dir: Path, manifest: dict[str, Any], stage: str, exc: Exception
 ) -> None:
+    if getattr(exc, "language_analysis", None):
+        manifest["language_summary"] = language_summary(exc.language_analysis)
     manifest["status"] = "failed"
     manifest["current_stage"] = stage
     if stage in manifest["stages"]:
@@ -372,6 +375,7 @@ def _request_correction_unlocked(
     validate_only: bool = False,
 ) -> dict[str, Any]:
     run_dir, manifest, human = load_run(artifact_dir)
+    config = recorded_language_config(config, manifest)
     eligible = manifest["status"] in {"awaiting_human_review", "revision_required"} or (
         manifest["status"] == "running"
         and manifest["current_stage"] in {"translation", "segmentation", "categorization"}
@@ -456,7 +460,7 @@ def _request_correction_unlocked(
             translated=translated,
         )
     except Exception as exc:
-        record_operation_failure(run_dir, manifest, requested_stage, exc)
+        record_operation_failure(run_dir, manifest, manifest.get("current_stage", requested_stage), exc)
         raise
     human["candidate_revision"] = candidate["candidate_revision"]
     human["self_evaluation_status"] = history["status"]

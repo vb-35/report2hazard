@@ -96,7 +96,15 @@ class PipelineConfig:
     batch_max_chars: int = 12000
     min_segment_count_before_pdf_retry: int = 10  # retained for config compatibility
     max_correction_rounds: int = 2
+    mainly_english_threshold: float = 0.75
+    language_min_confidence: float = 0.80
+    language_min_margin: float = 0.20
     schema_path: Path = field(default_factory=lambda: Path(__file__).resolve().parent / "schema" / "fai_row.schema.json")
+
+    def __post_init__(self) -> None:
+        for name in ("mainly_english_threshold", "language_min_confidence", "language_min_margin"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f"{name} must be between 0 and 1")
 
     def controlled_labels(self) -> dict[str, list[str]]:
         return {

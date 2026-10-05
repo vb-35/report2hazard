@@ -11,6 +11,7 @@ from docx import Document
 
 from multi_hazard_pipeline import human_review, pipeline
 from multi_hazard_pipeline.agents.source_agent import discover_inputs, extract_docx, source_agent
+from multi_hazard_pipeline.agents.translation_agent import translation_agent
 from multi_hazard_pipeline.config import DEFAULT_CONFIG
 from multi_hazard_pipeline.core import read_json
 from multi_hazard_pipeline.errors import PipelineError
@@ -124,7 +125,7 @@ def input_directory(tmp_path: Path) -> Path:
 def install_stage_fakes(monkeypatch: pytest.MonkeyPatch, evaluations: list[dict]) -> dict[str, int]:
     calls = {"translation": 0, "segmentation": 0, "categorization": 0, "evaluation": 0}
 
-    def fake_translation(client, source, correction_instruction=None):
+    def fake_translation(client, source, correction_instruction=None, **kwargs):
         calls["translation"] += 1
         translated = deepcopy(source)
         for chunk in translated["chunks"]:
@@ -482,7 +483,7 @@ def test_unexpected_failure_retains_structured_diagnostics(tmp_path: Path, monke
     monkeypatch.setattr(
         pipeline,
         "translation_agent",
-        lambda client, source: source
+        lambda client, source, **kwargs: source
         | {
             "chunks": [
                 chunk | {"source_language": "English", "translated_text": chunk["text"]}
@@ -497,6 +498,29 @@ def test_unexpected_failure_retains_structured_diagnostics(tmp_path: Path, monke
     assert manifest["errors"][0]["stage"] == "segmentation"
     assert manifest["errors"][0]["type"] == "RuntimeError"
     assert "model unavailable" in manifest["errors"][0]["message"]
+
+
+def test_translation_correction_keeps_english_passthrough(tmp_path, monkeypatch):
+    install_stage_fakes(monkeypatch, [evaluation()])
+    monkeypatch.setattr(pipeline, "translation_agent", translation_agent)
+    fake_segments = pipeline.segment_agent
+    instructions = []
+
+    def segments(*args, **kwargs):
+        instructions.append(kwargs.get("correction_instruction"))
+        return fake_segments(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "segment_agent", segments)
+    # object() cannot make LLM requests; downstream stages use the existing fakes.
+    manifest = pipeline.run_pipeline(input_directory(tmp_path), tmp_path / "runs", client=object())
+    manifest = human_review.request_correction(
+        manifest["artifact_dir"], requested_stage="translation",
+        global_comment="Preserve the terminology", client=object(),
+    )
+    assert manifest["status"] == "awaiting_human_review"
+    assert manifest["stages"]["translation"] == "skipped"
+    assert manifest["language_summary"]["translation_request_count"] == 0
+    assert "Preserve the terminology" in instructions[-1]
 
 
 def test_docx_tables_and_nested_cells_preserve_order_and_provenance(tmp_path):

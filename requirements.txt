@@ -4,3 +4,4 @@ pypdf
 jsonschema
 Flask
 pytest
+lingua-language-detector==2.1.1

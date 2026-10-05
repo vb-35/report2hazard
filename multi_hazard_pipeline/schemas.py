@@ -11,6 +11,7 @@ from .core import canonicalize_controlled_value, normalize_text
 
 CONTROLLED_FIELDS = ("generalized_category", "interaction_type", "sediment_transport_phase")
 SUPPORTED_SOURCE_LANGUAGES = ("English", "German", "French", "Italian")
+SOURCE_LANGUAGE_LABELS = SUPPORTED_SOURCE_LANGUAGES + ("Mixed", "Unknown")
 IMMUTABLE_SEGMENT_FIELDS = (
     "segment",
     "causal_order",
@@ -159,7 +160,7 @@ def translation_response_schema() -> dict[str, Any]:
                             "chunk_id": {"type": "string"},
                             "source_language": {
                                 "type": "string",
-                                "enum": list(SUPPORTED_SOURCE_LANGUAGES),
+                                "enum": list(SOURCE_LANGUAGE_LABELS),
                             },
                             "translated_text": {"type": "string"},
                         },

@@ -31,6 +31,14 @@
   {% for error in manifest.errors %}<p><strong>{{ error.stage or error.type }}:</strong> {{ error.message }}</p>{% endfor %}
 </section>
 {% endif %}
+{% if manifest.language_summary %}
+{% set language = manifest.language_summary %}
+<section class="panel"><h2>Report languages</h2>
+  <p>{{ language.languages | join(', ') or 'Unresolved' }}.
+  {% if language.english_share_lower is not none %}English share: {{ (100 * language.english_share_lower) | round(1) }}%–{{ (100 * language.english_share_upper) | round(1) }}%.{% endif %}
+  {{ language.reason }} Translation requests: {{ language.translation_request_count }}.</p>
+</section>
+{% endif %}
 {% if manifest.warnings %}
 <section class="panel warning"><h2>Warnings</h2><ul>{% for warning in manifest.warnings %}<li>{{ warning.message if warning is mapping else warning }}</li>{% endfor %}</ul></section>
 {% endif %}

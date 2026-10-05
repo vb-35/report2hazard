@@ -22,6 +22,7 @@ from .agents import (
 from .config import DEFAULT_CONFIG, PipelineConfig
 from .core import normalize_text, read_json, write_json
 from .errors import PipelineError
+from .language import language_settings, language_summary, recorded_language_config
 from .llm import ChatClient, append_timing
 
 
@@ -105,6 +106,7 @@ def build_manifest(
         "errors": [],
         "model": config.llm.model,
         "configuration": {
+            **language_settings(config),
             "batch_max_chars": config.batch_max_chars,
             "max_correction_rounds": config.max_correction_rounds,
             "temperature": config.llm.temperature,
@@ -141,7 +143,9 @@ def set_stage(
     state: str = "running",
     progress: int | None = None,
 ) -> None:
-    finish_stage_timing(artifact_dir, manifest, "completed")
+    previous_stage = manifest.get("current_stage")
+    finish_stage_timing(artifact_dir, manifest,
+                        "skipped" if manifest["stages"].get(previous_stage) == "skipped" else "completed")
     manifest["_stage_timer"] = (stage, perf_counter())
     manifest["current_stage"] = stage
     if stage in manifest["stages"]:
@@ -233,6 +237,15 @@ def issue_instruction(issues: list[dict[str, Any]]) -> str:
     )
 
 
+def record_translation_outcome(manifest: dict[str, Any], translated: dict[str, Any]) -> None:
+    analysis = translated.get("language_analysis")
+    if analysis:
+        manifest["language_summary"] = language_summary(analysis)
+    manifest["stages"]["translation"] = (
+        "skipped" if analysis and analysis["translation_request_count"] == 0 else "completed"
+    )
+
+
 def correct_until_terminal(
     *,
     client: ChatClient,
@@ -246,6 +259,7 @@ def correct_until_terminal(
     manifest: dict[str, Any],
     translated: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    config = recorded_language_config(config, manifest)
     bilingual_source = translated or source
     evaluation = history["latest_evaluation"]
     correction_limit = int(manifest.get("max_correction_rounds", config.max_correction_rounds))
@@ -264,7 +278,10 @@ def correct_until_terminal(
                 client,
                 source,
                 correction_instruction=issue_instruction(translation_issues),
+                config=config,
+                previous_analysis=bilingual_source.get("language_analysis"),
             )
+            record_translation_outcome(manifest, bilingual_source)
             write_json(artifact_dir / "translated.json", bilingual_source)
             set_stage(artifact_dir, manifest, "segmentation", progress=50)
             revised_segments = segment_agent(
@@ -272,13 +289,18 @@ def correct_until_terminal(
                 bilingual_source,
                 config,
                 correction_instruction=(
-                    issue_instruction(segmentation_issues) if segmentation_issues else None
+                    issue_instruction(segmentation_issues + translation_issues)
+                    if bilingual_source.get("language_analysis", {}).get("decision") == "skip_translation"
+                    else issue_instruction(segmentation_issues) if segmentation_issues else None
                 ),
             )
             segments = stabilize_segment_ids(revised_segments, segments)
             write_json(artifact_dir / "segments.json", segments)
             set_stage(artifact_dir, manifest, "categorization", progress=65)
-            classified = classification_agent(client, segments, config)
+            classified = classification_agent(
+                client, segments, config,
+                correction_instruction=issue_instruction(issues),
+            )
         elif segmentation_issues:
             stages_rerun = ["segmentation", "categorization"]
             set_stage(artifact_dir, manifest, "segmentation", progress=55)
@@ -325,6 +347,7 @@ def correct_until_terminal(
             "round": manifest["correction_rounds"],
             "identified_issues": issues,
             "stages_rerun": stages_rerun,
+            "translation_outcome": manifest["stages"]["translation"],
             "before_segment_ids": before_ids,
             "after_segment_ids": [item["segment"] for item in segments["segments"]],
             "resulting_evaluation": evaluation,
@@ -337,7 +360,8 @@ def correct_until_terminal(
         history["latest_evaluation"] = evaluation
         history["status"] = evaluation["status"]
         for rerun_stage in stages_rerun:
-            manifest["stages"][rerun_stage] = "completed"
+            if rerun_stage != "translation":
+                manifest["stages"][rerun_stage] = "completed"
         manifest["stages"]["candidate_report"] = "completed"
         write_json(artifact_dir / "self_evaluation.json", history)
         save_manifest(artifact_dir, manifest)
@@ -370,6 +394,7 @@ def execute_run(
 ) -> dict[str, Any]:
     run_dir = Path(artifact_dir).resolve()
     manifest = read_json(run_dir / "manifest.json")
+    config = recorded_language_config(config, manifest)
     manifest["status"] = "running"
     input_paths = [Path(item["path"]) for item in manifest["inputs"]]
     active_stage = "extraction"
@@ -387,9 +412,9 @@ def execute_run(
             llm_client = replace(llm_client, timing_path=run_dir / "timings.jsonl")
         active_stage = "translation"
         set_stage(run_dir, manifest, active_stage, progress=20)
-        translated = translation_agent(llm_client, source)
+        translated = translation_agent(llm_client, source, config=config)
         write_json(run_dir / "translated.json", translated)
-        manifest["stages"][active_stage] = "completed"
+        record_translation_outcome(manifest, translated)
 
         active_stage = "segmentation"
         set_stage(run_dir, manifest, active_stage, progress=35)
@@ -442,6 +467,8 @@ def execute_run(
             write_json(run_dir / "human_review.json", create_human_review(manifest, candidate))
         save_manifest(run_dir, manifest)
     except Exception as exc:
+        if getattr(exc, "language_analysis", None):
+            manifest["language_summary"] = language_summary(exc.language_analysis)
         failure_stage = manifest.get("current_stage", active_stage)
         if failure_stage not in manifest["stages"]:
             failure_stage = active_stage

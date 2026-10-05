@@ -4,6 +4,7 @@ from typing import Any
 
 from ..config import PipelineConfig
 from ..core import normalize_text
+from ..language import language_prompt_context
 from ..llm import ChatClient
 from ..schemas import review_response_schema, validate_review_payload
 
@@ -139,8 +140,12 @@ For a whole-report issue with no affected segment, use "segment_ids":[], never o
 The stage value must be exactly one of "translation", "segmentation", or "categorization".
 
 Assess semantic facts that deterministic code cannot decide reliably:
-- Does each translated_text faithfully preserve its original text, including terminology, names, quantities, negation,
+- Where translation_applied is true, does translated_text faithfully preserve its original text, including terminology, names, quantities, negation,
   uncertainty, and causality? Use issue stage translation and fail evidence_verified for translation defects.
+- Where translation_applied is false, translated_text intentionally retains the original language. Minority-language
+  passthrough under skip_translation is not a translation defect; never request translation merely for it.
+  Missing or incorrect interpretation of these passages in the English event/process fields is a segmentation issue.
+  Legacy artifacts without flags retain the contract that translated_text is an English translation.
 - Are every segment's event and process written in English?
 - Does the complete causal chain make sense, with coherent order and direct predecessors?
 - Are important causal-process steps missing?
@@ -190,6 +195,7 @@ Negative Impact merely because the structure was damaged or its protective funct
             "controlled_labels": config.controlled_labels(),
             "candidate_report": candidate,
             "source_chunks": source.get("chunks", []),
+            "language_context": language_prompt_context(source),
             "deterministic_checks": deterministic_checks,
         },
         validate=validate,
