@@ -129,9 +129,15 @@ class ChatClient:
         }
         if response_schema:
             payload["response_format"] = {"type": "json_schema", "json_schema": response_schema}
+        body = json.dumps(payload)
+        if len(body) > self.config.max_request_chars:
+            raise PipelineError(
+                f"chat request contains {len(body)} characters, exceeding max_request_chars="
+                f"{self.config.max_request_chars}; use a smaller report or adjust the configured limit"
+            )
         req = request.Request(
             url,
-            data=json.dumps(payload).encode("utf-8"),
+            data=body.encode("utf-8"),
             method="POST",
             headers={
                 "Authorization": f"Bearer {self.api_key}",

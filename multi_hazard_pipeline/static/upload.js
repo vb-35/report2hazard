@@ -14,5 +14,5 @@ form.addEventListener('submit', event => {
     return;
   }
   form.querySelector('button').disabled = true;
-  message.textContent = 'Preparing your report… PDF collections can take several minutes to check. Keep this page open.';
+  message.textContent = 'Uploading your report… You will be taken to its progress page.';
 });

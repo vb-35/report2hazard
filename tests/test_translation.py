@@ -158,3 +158,45 @@ def test_missing_or_duplicate_translation_results_are_rejected(translations, mes
     client = PayloadClient({"translations": translations})
     with pytest.raises(ValueError, match=message):
         translation_agent(client, source("Ein Murgang trat auf."))
+
+
+def test_long_source_is_split_without_text_loss_and_translates_offline(tmp_path):
+    from multi_hazard_pipeline.agents.source_agent import source_agent
+    from multi_hazard_pipeline.agents.segment_agent import batch_chunks
+    from multi_hazard_pipeline.core import normalize_text
+
+    path = tmp_path / "long.txt"
+    text = normalize_text("Heavy rainfall mobilized sediment. " * 2000)
+    path.write_text(text, encoding="utf-8")
+    original = source_agent([path], "report")
+    chunks = original["chunks"]
+    assert len(chunks) > 1
+    assert "".join(chunk["text"] for chunk in chunks) == text
+    assert len({chunk["chunk_id"] for chunk in chunks}) == len(chunks)
+    assert all(chunk["text"] == text[chunk["char_start"]:chunk["char_end"]] for chunk in chunks)
+
+    class EchoClient:
+        def complete_json(self, **kwargs):
+            batch = kwargs["user_payload"]["chunks"]
+            assert sum(len(chunk["text"]) for chunk in batch) <= 5000
+            payload = {"translations": [dict(
+                chunk_id=chunk["chunk_id"], source_language="English", translated_text=chunk["text"],
+            ) for chunk in batch]}
+            kwargs["validate"](payload)
+            return payload
+
+    translated = translation_agent(EchoClient(), original)
+    assert normalize_text(" ".join(chunk["translated_text"] for chunk in translated["chunks"])) == text
+    assert [c["char_start"] for c in translated["chunks"]] == [c["char_start"] for c in chunks]
+    assert all(sum(len(c["text"]) + len(c["translated_text"]) for c in batch) <= 6000
+               for batch in batch_chunks(translated["chunks"], 6000))
+
+
+def test_batch_rejects_oversized_chunk_instead_of_bypassing_limit():
+    from multi_hazard_pipeline.agents.segment_agent import batch_chunks
+    from multi_hazard_pipeline.errors import PipelineError
+
+    with pytest.raises(PipelineError, match="exceeding"):
+        batch_chunks([{"chunk_id": "long", "text": "x" * 50000}], 5000)
+    with pytest.raises(PipelineError, match="exceeding"):
+        batch_chunks([{"chunk_id": "bilingual", "text": "x" * 3000, "translated_text": "y" * 3000}], 5000)

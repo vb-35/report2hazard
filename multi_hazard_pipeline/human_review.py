@@ -240,13 +240,14 @@ def _apply_candidate_edits_unlocked(
     *,
     config: PipelineConfig = DEFAULT_CONFIG,
     client: ChatClient | None = None,
+    validate_only: bool = False,
 ) -> dict[str, Any]:
     run_dir, manifest, human = load_run(artifact_dir)
-    eligible = manifest["status"] == "awaiting_human_review" or (
+    eligible = manifest["status"] in {"awaiting_human_review", "revision_required"} or (
         manifest["status"] == "running" and manifest["current_stage"] == "self_evaluation"
     )
     if not eligible:
-        raise PipelineError("candidate edits are allowed only while awaiting human review")
+        raise PipelineError("candidate edits require a reviewable candidate")
     candidate = read_json(run_dir / "candidate_report.json")
     source = read_json(run_dir / "source.json")
     translated_path = run_dir / "translated.json"
@@ -318,6 +319,8 @@ def _apply_candidate_edits_unlocked(
     candidate["rows"] = sorted(candidate_map.values(), key=lambda row: row["causal_order"])
     candidate["candidate_revision"] += 1
     validate_candidate(candidate, source, config)
+    if validate_only:
+        return manifest
     segments["segments"] = sorted(segment_map.values(), key=lambda row: row["causal_order"])
     classified["rows"] = sorted(classified_map.values(), key=lambda row: row["causal_order"])
     human["edits"].extend(audit_entries)
@@ -366,6 +369,7 @@ def _request_correction_unlocked(
     segment_comments: list[dict[str, Any]] | None = None,
     config: PipelineConfig = DEFAULT_CONFIG,
     client: ChatClient | None = None,
+    validate_only: bool = False,
 ) -> dict[str, Any]:
     run_dir, manifest, human = load_run(artifact_dir)
     eligible = manifest["status"] in {"awaiting_human_review", "revision_required"} or (
@@ -391,6 +395,8 @@ def _request_correction_unlocked(
         raise PipelineError(f"correction references unknown segment IDs: {sorted(unknown)}")
     comments = normalize_segment_comments(segment_comments)
     validate_comment_segments(comments, candidate)
+    if validate_only:
+        return manifest
     decision = record_decision(human, "request_correction", global_comment, comments, requested_stage)
     source = read_json(run_dir / "source.json")
     translated_path = run_dir / "translated.json"

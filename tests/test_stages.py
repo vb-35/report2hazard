@@ -188,7 +188,7 @@ def test_multiple_batches_receive_a_final_consolidation_call() -> None:
     client = PayloadClient([preliminary_1, preliminary_2, consolidated])
     from dataclasses import replace
 
-    result = segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=10))
+    result = segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=60))
     assert len(client.calls) == 3
     assert "Consolidate" in client.calls[-1]["system_prompt"]
     assert [item["segment"] for item in result["segments"]] == [1, 2]
@@ -202,7 +202,7 @@ def test_segmentation_correction_uses_smaller_batches() -> None:
     second = {"segments": [segment(1, 1, "Bridge became blocked", "c2", "bridge became blocked by debris")]}
     consolidated = {"segments": [consolidation_row(item, [item["segment"]]) for item in chain()["segments"]]}
     client = PayloadClient([first, second, consolidated])
-    result = segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=100), correction_instruction="Fix the chain.")
+    result = segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=120), correction_instruction="Fix the chain.")
 
     assert [len(call["user_payload"].get("chunks", [])) for call in client.calls] == [1, 1, 0]
     assert len(result["segments"]) == 2
@@ -215,7 +215,7 @@ def test_consolidation_error_names_the_missing_citation() -> None:
     from dataclasses import replace
 
     with pytest.raises(ValueError, match="bridge became blocked by debris"):
-        segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=10))
+        segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=60))
 
 
 def test_consolidation_rejects_reused_source_segment() -> None:
@@ -227,7 +227,7 @@ def test_consolidation_rejects_reused_source_segment() -> None:
     from dataclasses import replace
 
     with pytest.raises(ValueError, match="more than once"):
-        segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=10))
+        segment_agent(client, source(), replace(DEFAULT_CONFIG, batch_max_chars=60))
 
 
 def test_consolidation_merge_keeps_every_original_citation() -> None:

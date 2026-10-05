@@ -42,15 +42,31 @@ TAXONOMY: dict[str, dict[str, Any]] = {
 }
 
 
+def api_base_url_from_env() -> str:
+    value = os.environ.get("TW_LLM_API_BASE_URL", "").strip()
+    if value:
+        return value
+    # Windows launchers can inherit an environment older than the saved user setting.
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _ = winreg.QueryValueEx(key, "TW_LLM_API_BASE_URL")
+        return value.strip() if isinstance(value, str) else ""
+    except (ImportError, OSError):
+        return ""
+
+
 @dataclass(frozen=True)
 class LLMConfig:
-    api_base_url: str = field(default_factory=lambda: os.environ.get("TW_LLM_API_BASE_URL", "").strip())
+    api_base_url: str = field(default_factory=api_base_url_from_env)
     text_endpoint: str = "/chat/completions"
     api_key_env_var: str = "TW_LLM_API_KEY"
     model: str = "google/gemma-4-31B-it"
     retries: int = 3
     temperature: float = 0.0
     timeout_seconds: int = 400
+    max_request_chars: int = 200000
 
     def api_key_from_env(self) -> str:
         api_key = os.environ.get(self.api_key_env_var, "").strip()

@@ -12,9 +12,9 @@ Supported inputs are DOCX, PDF, and UTF-8 TXT files containing English, German, 
 
 ## Easy interface (Windows)
 
-Before processing reports, set `TW_LLM_API_BASE_URL` in your Windows user environment to your provider's API base URL (including its API version path), then open a new launcher window. No service address is bundled. Browsing existing results does not require this setting.
+Before processing reports, set `TW_LLM_API_BASE_URL` in your Windows user environment to your provider's API base URL (including its API version path). The app reads the saved Windows user setting if the launcher's inherited environment lacks it. Restart an already-running interface after changing the setting. No service address is bundled. Browsing existing results does not require this setting.
 
-Requires Python 3.10 or newer. From the project folder, create an environment and install dependencies:
+Requires Python 3.11 or newer. From the project folder, create an environment and install dependencies:
 
 ```powershell
 python -m venv .venv
@@ -66,19 +66,25 @@ python -m multi_hazard_pipeline serve results --host 127.0.0.1 --port 5000
 
 Open `http://127.0.0.1:5000`. The local server accepts uploads, runs one job at a time in a background thread, polls artifact manifests, and supports review, edits, correction requests, rejection, approval, and downloads. The LLM key never enters browser HTML or JavaScript.
 
+Single-PDF preparation also runs on that worker. Uploads open a progress page immediately; when a collection is separated, that page links to each event's independent run. Preparation failures remain visible in the parent manifest.
+
 This version intentionally uses a single-process, in-memory worker. Restarting the server loses queued/running jobs, while completed artifact directories remain reopenable. Do not enable Flask's development reloader because it can duplicate the worker. The UI has no authentication or CSRF layer and is intended only for localhost; do not bind it to an untrusted network.
 
 The correction maximum is run-wide, including automatic and human-requested reruns. A translation correction reruns translation, segmentation, and categorization; a segmentation correction also reruns categorization. Whole-report evaluation receives each chunk's original and English text so it can check bilingual fidelity and the complete causal chain.
+
+Candidates in `revision_required` remain editable. Manual edits can be re-evaluated even when automatic correction rounds are exhausted; approval requires a passing evaluation. Invalid or unchanged edits and invalid correction requests display an error without modifying saved artifacts.
+
+DOCX extraction includes tables and nested tables in document order, with table, row, and cell provenance. Long source chunks are divided before translation, retaining their parent ID and zero-based character offsets (exclusive end). Batches count both original and translated text; oversized translated chunks fail explicitly. `LLMConfig.max_request_chars` caps the complete serialized request, including its schema, at 200,000 characters by default. This is a character safeguard, not a token measurement: whole-report evaluation above the ceiling fails before submission, so adjust the ceiling to your provider's capacity when needed.
 
 ## Run states and artifacts
 
 Run folders use the input report name followed by the UTC start time, for example `schnannerbach__2026-09-28_08-36-16-123456Z`. The final six digits are microseconds to distinguish closely spaced runs. Companion-file runs use the first selected file's name; split collections use each event report's filename.
 
-Statuses are `running`, `revision_required`, `awaiting_human_review`, `rejected`, `failed`, and `approved`.
+Statuses are `running`, `revision_required`, `awaiting_human_review`, `rejected`, `failed`, and `approved`. A collection parent uses `split` once its child runs have been created.
 
-Each run directory preserves `source.json`, `translated.json`, `segments.json`, `classified.json`, `candidate_report.json`, `self_evaluation.json`, `human_review.json`, and `manifest.json`. Only approved runs add authoritative `final_rows.json` and `final_rows.csv`.
+Each extraction run directory preserves `source.json`, `translated.json`, `segments.json`, `classified.json`, `candidate_report.json`, `self_evaluation.json`, `human_review.json`, and `manifest.json` as stages complete. Collection parents hold their preparation manifest and child-run links. Only approved runs add authoritative `final_rows.json` and `final_rows.csv`.
 
-Run deterministic tests without an API key:
+Run deterministic tests without an API key. The suite blocks network connections and uses fake model responses:
 
 ```powershell
 python -m pytest -q

@@ -109,6 +109,7 @@ def build_manifest(
             "max_correction_rounds": config.max_correction_rounds,
             "temperature": config.llm.temperature,
             "timeout_seconds": config.llm.timeout_seconds,
+            "max_request_chars": config.llm.max_request_chars,
         },
         "artifacts": artifact_paths(artifact_dir),
         "human_decision": None,
@@ -189,7 +190,8 @@ def build_candidate_report(
     provenance_by_chunk = {
         chunk["chunk_id"]: {
             key: chunk[key]
-            for key in ("document_id", "doc_id", "filename", "source_type", "page", "paragraph")
+            for key in ("document_id", "doc_id", "filename", "source_type", "page", "paragraph",
+                        "table", "table_path", "row", "cell", "parent_chunk_id", "char_start", "char_end")
             if key in chunk
         }
         for chunk in source["chunks"]
@@ -373,7 +375,9 @@ def execute_run(
     active_stage = "extraction"
     try:
         set_stage(run_dir, manifest, active_stage, progress=10)
-        source = source_agent(input_paths, manifest["doc_id"])
+        source = source_agent(
+            input_paths, manifest["doc_id"], max_chunk_chars=min(2000, max(1, config.batch_max_chars // 4))
+        )
         source["report_grouping_rule"] = REPORT_GROUPING_RULE
         write_json(run_dir / "source.json", source)
         manifest["stages"][active_stage] = "completed"
@@ -425,9 +429,9 @@ def execute_run(
         manifest["stages"][active_stage] = "completed"
         if history["status"] == "pass":
             active_stage = "human_review"
+            manifest["status"] = "awaiting_human_review"
             human_review = create_human_review(manifest, candidate)
             write_json(run_dir / "human_review.json", human_review)
-            manifest["status"] = "awaiting_human_review"
             manifest["current_stage"] = "human_review"
             manifest["progress"] = 90
             manifest["stages"]["human_review"] = "awaiting"
@@ -435,6 +439,7 @@ def execute_run(
             manifest["status"] = "revision_required"
             manifest["current_stage"] = "self_evaluation"
             manifest["progress"] = 80
+            write_json(run_dir / "human_review.json", create_human_review(manifest, candidate))
         save_manifest(run_dir, manifest)
     except Exception as exc:
         failure_stage = manifest.get("current_stage", active_stage)

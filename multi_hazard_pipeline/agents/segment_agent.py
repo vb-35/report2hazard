@@ -69,11 +69,18 @@ Return only JSON with supported, fragment_ids, and a concise reason. Python will
 
 
 def batch_chunks(chunks: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
+    if max_chars < 1:
+        raise PipelineError("batch character limit must be positive")
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_size = 0
     for chunk in chunks:
-        size = max(len(chunk["text"]), len(chunk.get("translated_text", chunk["text"])))
+        size = len(chunk["text"]) + len(chunk.get("translated_text", ""))
+        if size > max_chars:
+            raise PipelineError(
+                f"chunk {chunk['chunk_id']} contains {size} text characters, exceeding the "
+                f"{max_chars} batch limit; re-extract with smaller source chunks or increase the limit"
+            )
         if current and current_size + size > max_chars:
             batches.append(current)
             current, current_size = [], 0

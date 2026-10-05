@@ -174,6 +174,8 @@ def test_uploaded_collection_creates_one_ordinary_run_per_event(
         "multi_hazard_pipeline.web.split_event_reports",
         lambda *args, **kwargs: event_pdfs,
     )
+    executed = []
+    monkeypatch.setattr("multi_hazard_pipeline.web.execute_run", lambda path, config: executed.append(path))
     executor = QueuedExecutor()
     root = tmp_path / "runs"
     client = create_app(root, executor=executor).test_client()
@@ -182,11 +184,22 @@ def test_uploaded_collection_creates_one_ordinary_run_per_event(
         data={"files": [(BytesIO(b"%PDF-1.4\n%%EOF"), "collection.pdf")]},
         content_type="multipart/form-data",
     )
-    manifests = list(root.glob("*/manifest.json"))
     assert response.status_code == 303
+    parent_dir = root / response.headers["Location"].rsplit("/", 1)[-1]
+    assert read_json(parent_dir / "manifest.json")["status"] == "running"
+    assert len(list(root.glob("*/manifest.json"))) == 1
+    assert len(executor.jobs) == 1
+    assert not executed
+    executor.jobs.pop()()
+    parent = read_json(parent_dir / "manifest.json")
+    assert parent["status"] == "split"
+    assert parent["stages"]["preparation"] == "completed"
+    manifests = [root / child["run_id"] / "manifest.json" for child in parent["child_runs"]]
     assert len(manifests) == 2
     assert sorted(path.parent.name.split("__")[0] for path in manifests) == ["01-first", "02-second"]
-    assert len(executor.jobs) == 2
+    assert executed == [path.parent for path in manifests]
+    page = client.get(response.headers["Location"])
+    assert all(child["run_id"].encode() in page.data for child in parent["child_runs"])
     assert sorted(read_json(path)["inputs"][0]["filename"] for path in manifests) == [
         "01-first.pdf",
         "02-second.pdf",
@@ -293,3 +306,111 @@ def test_background_failure_is_recorded_in_manifest(tmp_path: Path, monkeypatch:
     assert manifest["status"] == "failed"
     assert manifest["errors"][-1]["stage"] == "pipeline"
     assert "worker unavailable" in manifest["errors"][-1]["message"]
+
+
+@pytest.mark.parametrize("data", [
+    {"segment": "1", "field": "event", "new_value": "Catchment event"},
+    {"segment": "1", "field": "interaction_type", "new_value": "typo"},
+    {"segment": "1", "field": "causal_order", "new_value": "not a number"},
+    {"segment": "1", "field": "process", "new_value": "  "},
+    {"segment": "1", "field": "predecessor_segment_ids", "new_value": "1"},
+    {"segment": "999", "field": "event", "new_value": "Unknown"},
+])
+def test_invalid_edit_preserves_reviewable_run(tmp_path, data):
+    root, manifest = seeded_run(tmp_path)
+    run_dir = Path(manifest["artifact_dir"])
+    before = {path.name: path.read_bytes() for path in run_dir.glob("*.json")}
+    executor = QueuedExecutor()
+    client = create_app(root, executor=executor).test_client()
+    response = client.post("/runs/test-run/edit", data=data)
+    assert response.status_code == 409
+    assert b'role="alert"' in response.data
+    assert b"Approve report" in response.data
+    assert not executor.jobs
+    assert before == {path.name: path.read_bytes() for path in run_dir.glob("*.json")}
+
+
+@pytest.mark.parametrize("exhausted,extra", [
+    (True, {}),
+    (False, {"segment_ids": "999"}),
+    (False, {"comment_segment": "999", "issue_type": "missing"}),
+])
+def test_invalid_correction_preserves_reviewable_run(tmp_path, exhausted, extra):
+    root, manifest = seeded_run(tmp_path)
+    run_dir = Path(manifest["artifact_dir"])
+    if exhausted:
+        manifest["correction_rounds"] = manifest["max_correction_rounds"]
+        save_manifest(run_dir, manifest)
+    before = {path.name: path.read_bytes() for path in run_dir.glob("*.json")}
+    executor = QueuedExecutor()
+    client = create_app(root, executor=executor).test_client()
+    response = client.post("/runs/test-run/decision", data={
+        "decision": "request_correction", "requested_stage": "translation", **extra,
+    })
+    assert response.status_code == 409
+    assert not executor.jobs
+    assert before == {path.name: path.read_bytes() for path in run_dir.glob("*.json")}
+
+
+def test_revision_required_run_can_be_corrected_and_manually_edited(tmp_path, monkeypatch):
+    root, manifest = seeded_run(tmp_path, "revision_required")
+    executor = QueuedExecutor()
+    client = create_app(root, executor=executor).test_client()
+    detail = client.get("/runs/test-run")
+    assert b"Request correction" in detail.data and b"Edit this candidate" in detail.data
+    assert b"Approve report" not in detail.data
+    assert client.post("/runs/test-run/decision", data={
+        "decision": "request_correction", "requested_stage": "translation",
+    }).status_code == 303
+    assert len(executor.jobs) == 1
+
+    edit_root, edit_manifest = seeded_run(tmp_path / "edit", "revision_required")
+    edit_dir = Path(edit_manifest["artifact_dir"])
+    edit_manifest["correction_rounds"] = edit_manifest["max_correction_rounds"]
+    save_manifest(edit_dir, edit_manifest)
+    monkeypatch.setattr("multi_hazard_pipeline.human_review.ChatClient.from_config", lambda config: object())
+    monkeypatch.setattr("multi_hazard_pipeline.human_review.review_agent", lambda *args: evaluation())
+    edit_client = create_app(edit_root, executor=ImmediateExecutor()).test_client()
+    detail = edit_client.get("/runs/test-run")
+    assert b"0 automatic correction round(s) remaining" in detail.data
+    assert b'value="request_correction" disabled' in detail.data
+    assert edit_client.post("/runs/test-run/edit", data={
+        "segment": "1", "field": "interaction_type", "new_value": "Process-topography",
+    }).status_code == 303
+    assert read_json(edit_dir / "manifest.json")["status"] == "awaiting_human_review"
+    assert read_json(edit_dir / "human_review.json")["self_evaluation_status"] == "pass"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_pdf_preparation_is_queued_and_failures_are_saved(tmp_path, monkeypatch, fails):
+    from io import BytesIO
+    calls = []
+
+    def split(path, *args):
+        calls.append("split")
+        if fails:
+            raise PipelineError("ambiguous PDF")
+        return [path.resolve()]
+
+    from multi_hazard_pipeline.errors import PipelineError
+    monkeypatch.setattr("multi_hazard_pipeline.web.ChatClient.from_config", lambda config: object())
+    monkeypatch.setattr("multi_hazard_pipeline.web.split_event_reports", split)
+    monkeypatch.setattr("multi_hazard_pipeline.web.execute_run", lambda *args: calls.append("execute"))
+    executor = QueuedExecutor()
+    root = tmp_path / "runs"
+    client = create_app(root, executor=executor).test_client()
+    response = client.post("/runs", data={"files": (BytesIO(b"synthetic PDF"), "report.pdf")})
+    assert response.status_code == 303
+    assert not calls
+    run_dir = root / response.headers["Location"].rsplit("/", 1)[-1]
+    assert read_json(run_dir / "manifest.json")["stages"]["preparation"] == "pending"
+    executor.jobs.pop()()
+    saved = read_json(run_dir / "manifest.json")
+    if fails:
+        assert saved["status"] == "failed"
+        assert saved["stages"]["preparation"] == "failed"
+        assert "ambiguous PDF" in saved["errors"][-1]["message"]
+        assert calls == ["split"]
+    else:
+        assert calls == ["split", "execute"]
+        assert saved["stages"]["preparation"] == "completed"

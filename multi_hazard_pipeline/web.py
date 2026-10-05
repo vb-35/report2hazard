@@ -30,6 +30,7 @@ STATUS_LABELS = {
     "rejected": "Rejected",
     "failed": "Failed",
     "approved": "Approved",
+    "split": "Collection separated",
 }
 
 
@@ -71,6 +72,8 @@ def _record_worker_failure(run_dir: Path, task: str, exc: Exception) -> None:
         manifest = read_json(run_dir / "manifest.json")
         manifest["status"] = "failed"
         manifest["current_stage"] = task
+        if task in manifest.get("stages", {}):
+            manifest["stages"][task] = "failed"
         manifest.setdefault("errors", []).append(
             {
                 "stage": task,
@@ -90,8 +93,8 @@ def _record_worker_failure(run_dir: Path, task: str, exc: Exception) -> None:
 def _mark_queued_work(run_dir: Path, stage: str) -> None:
     with run_lock(run_dir):
         manifest = read_json(run_dir / "manifest.json")
-        if manifest.get("status") != "awaiting_human_review":
-            raise PipelineError("human review work can be queued only while awaiting human review")
+        if manifest.get("status") not in {"awaiting_human_review", "revision_required"}:
+            raise PipelineError("human review work requires a reviewable candidate")
         manifest["status"] = "running"
         manifest["current_stage"] = stage
         if stage in manifest.get("stages", {}):
@@ -121,6 +124,43 @@ def _list_runs(root: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
     return sorted(runs, key=lambda item: item.get("created_at", ""), reverse=True)
+
+
+def _prepare_and_execute(run_dir: Path, config: PipelineConfig) -> None:
+    """Run PDF preparation and event extraction on the same single worker."""
+    manifest = read_json(run_dir / "manifest.json")
+    selected = [Path(item["path"]) for item in manifest["inputs"]]
+    if len(selected) != 1 or selected[0].suffix.lower() != ".pdf":
+        execute_run(run_dir, config)
+        return
+    manifest["current_stage"] = "preparation"
+    manifest["stages"]["preparation"] = "running"
+    manifest["progress"] = 5
+    save_manifest(run_dir, manifest)
+    split_paths = split_event_reports(
+        selected[0], run_dir.parent / ".splits" / manifest["run_id"],
+        ChatClient.from_config(config.llm), config,
+    )
+    if not split_paths:
+        raise PipelineError("PDF preparation produced no event reports")
+    manifest["stages"]["preparation"] = "completed"
+    if split_paths == [selected[0].resolve()]:
+        save_manifest(run_dir, manifest)
+        execute_run(run_dir, config)
+        return
+    manifest["child_runs"] = []
+    for path in split_paths:
+        child = create_run(
+            path.parent, run_dir.parent, config,
+            input_paths=[path], doc_id=_uploaded_report_id([path]),
+        )
+        manifest["child_runs"].append({"run_id": child["run_id"], "filename": path.name})
+        save_manifest(run_dir, manifest)
+    manifest["status"] = "split"
+    manifest["progress"] = 100
+    save_manifest(run_dir, manifest)
+    for child in manifest["child_runs"]:
+        execute_run(run_dir.parent / child["run_id"], config)
 
 
 def create_app(
@@ -176,38 +216,10 @@ def create_app(
             else:
                 source_dir = Path(input_dir).resolve()
                 selected = discover_inputs(source_dir)
-            split_paths = (
-                split_event_reports(
-                    selected[0],
-                    root / ".splits" / run_id,
-                    ChatClient.from_config(config.llm),
-                    config,
-                )
-                if len(selected) == 1 and selected[0].suffix.lower() == ".pdf"
-                else None
+            manifest = create_run(
+                source_dir, root, config, input_paths=selected,
+                doc_id=_uploaded_report_id(selected) if uploads else None,
             )
-            manifests = []
-            if split_paths and split_paths != [selected[0].resolve()]:
-                for path in split_paths:
-                    manifests.append(
-                        create_run(
-                            path.parent,
-                            root,
-                            config,
-                            input_paths=[path],
-                            doc_id=_uploaded_report_id([path]),
-                        )
-                    )
-            else:
-                manifests.append(
-                    create_run(
-                        source_dir,
-                        root,
-                        config,
-                        input_paths=selected,
-                        doc_id=_uploaded_report_id(selected) if uploads else None,
-                    )
-                )
         except (OSError, PipelineError) as exc:
             return render_template(
                 "index.html",
@@ -215,13 +227,16 @@ def create_app(
                 status_labels=STATUS_LABELS,
                 error=str(exc),
             ), 400
-        for manifest in manifests:
-            run_dir = Path(manifest["artifact_dir"])
-            _submit(app, "pipeline", run_dir, execute_run, run_dir, config)
-        return redirect(url_for("run_detail", run_id=manifests[0]["run_id"]), code=303)
+        run_dir = Path(manifest["artifact_dir"])
+        task = "preparation" if len(selected) == 1 and selected[0].suffix.lower() == ".pdf" else "pipeline"
+        if task == "preparation":
+            manifest["stages"][task] = "pending"
+            save_manifest(run_dir, manifest)
+        _submit(app, task, run_dir, _prepare_and_execute, run_dir, config)
+        return redirect(url_for("run_detail", run_id=manifest["run_id"]), code=303)
 
     @app.get("/runs/<run_id>")
-    def run_detail(run_id: str):
+    def run_detail(run_id: str, error: str | None = None):
         run_dir = _run_dir(app, run_id)
         manifest = read_json(run_dir / "manifest.json")
         return render_template(
@@ -231,6 +246,8 @@ def create_app(
             candidate=_optional_json(run_dir, "candidate_report.json"),
             evaluation=_optional_json(run_dir, "self_evaluation.json"),
             human=_optional_json(run_dir, "human_review.json"),
+            controlled_labels=config.controlled_labels(),
+            error=error,
         )
 
     @app.get("/runs/<run_id>/status")
@@ -270,13 +287,12 @@ def create_app(
                 requested_stage = request.form.get("requested_stage", "")
                 ids_text = request.form.get("segment_ids", "")
                 segment_ids = [int(item.strip()) for item in ids_text.split(",") if item.strip()]
-                if requested_stage not in {"translation", "segmentation", "categorization"}:
-                    raise PipelineError(
-                        "requested_stage must be translation, segmentation, or categorization"
+                with run_lock(run_dir):
+                    request_correction(
+                        run_dir, requested_stage=requested_stage, segment_ids=segment_ids,
+                        config=config, validate_only=True, **common,
                     )
-                if requested_stage == "categorization" and not segment_ids:
-                    raise PipelineError("categorization correction requires affected segment IDs")
-                _mark_queued_work(run_dir, requested_stage)
+                    _mark_queued_work(run_dir, requested_stage)
                 _submit(
                     app,
                     f"human_{requested_stage}_correction",
@@ -291,7 +307,7 @@ def create_app(
             else:
                 raise PipelineError("unknown human decision")
         except (PipelineError, ValueError) as exc:
-            return str(exc), 409
+            return run_detail(run_id, error=str(exc)), 409
         except OSError as exc:
             if read_json(run_dir / "manifest.json").get("status") != "failed":
                 _record_worker_failure(run_dir, "human_decision", exc)
@@ -308,20 +324,23 @@ def create_app(
             if field == "predecessor_segment_ids":
                 raw_value = [int(item.strip()) for item in raw_value.split(",") if item.strip()]
         except ValueError as exc:
-            return f"invalid edit value: {exc}", 400
+            return run_detail(run_id, error=f"invalid edit value: {exc}"), 400
         try:
-            _mark_queued_work(run_dir, "self_evaluation")
+            edits = [{"segment": segment, "field": field, "new_value": raw_value}]
+            with run_lock(run_dir):
+                apply_candidate_edits(run_dir, edits, config=config, validate_only=True)
+                _mark_queued_work(run_dir, "self_evaluation")
             _submit(
                 app,
                 "human_edit_evaluation",
                 run_dir,
                 apply_candidate_edits,
                 run_dir,
-                [{"segment": segment, "field": field, "new_value": raw_value}],
+                edits,
                 config=config,
             )
-        except PipelineError as exc:
-            return str(exc), 409
+        except (PipelineError, ValueError) as exc:
+            return run_detail(run_id, error=str(exc)), 409
         return redirect(url_for("run_detail", run_id=run_id), code=303)
 
     @app.get("/runs/<run_id>/download/<artifact>")

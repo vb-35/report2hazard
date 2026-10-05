@@ -4,10 +4,18 @@
 <nav><a href="{{ url_for('index') }}">← All runs</a></nav>
 <h1>{{ manifest.inputs | map(attribute='filename') | join(', ') or manifest.run_id }}</h1>
 <p class="hint">{{ manifest.run_id }}</p>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
 {% if manifest.status == 'running' %}<p class="message">Your report is being processed. Progress updates automatically; you can return to this report later.</p>
 {% elif manifest.status == 'awaiting_human_review' %}<p class="message">Review the events and their evidence below, then <a href="#review-heading">approve or request changes</a>.</p>
 {% elif manifest.status == 'approved' %}<p class="message">Your report is approved. <a href="#exports">Download your results</a>.</p>
-{% elif manifest.status in ['failed', 'revision_required'] %}<p class="message">This report needs attention. Check the details below before <a href="{{ url_for('index') }}">starting a new report</a>.</p>{% endif %}
+{% elif manifest.status == 'revision_required' %}<p class="message">This report needs changes. Edit the candidate below or request another correction if rounds remain.</p>
+{% elif manifest.status == 'failed' %}<p class="message">This report needs attention. Check the details below before <a href="{{ url_for('index') }}">starting a new report</a>.</p>{% endif %}
+
+{% if manifest.child_runs %}
+<section class="panel"><h2>Event reports</h2><p>Each report is processed and reviewed separately. Open a report to see its progress.</p>
+  <ul>{% for child in manifest.child_runs %}<li><a href="{{ url_for('run_detail', run_id=child.run_id) }}">{{ child.filename }}</a></li>{% endfor %}</ul>
+</section>
+{% endif %}
 
 <section id="run-status" class="status state-{{ manifest.status }}" data-status-url="{{ url_for('run_status', run_id=manifest.run_id) }}" data-status="{{ manifest.status }}" aria-live="polite">
   <div><span class="badge" id="status-name">{{ status_label }}</span></div>
@@ -58,16 +66,16 @@
       <div><dt>Predecessors</dt><dd>{{ row.predecessor_segment_ids | join(', ') if row.predecessor_segment_ids else 'None' }}</dd></div>
     </dl>
     <details><summary>Evidence and provenance ({{ row.evidence | length }})</summary>
-      {% for evidence in row.evidence %}<blockquote><p>{{ evidence.quote }}</p><footer>{{ evidence.chunk_id }} · {{ evidence.provenance.filename }}{% if evidence.provenance.page %}, page {{ evidence.provenance.page }}{% endif %}{% if evidence.provenance.paragraph %}, paragraph {{ evidence.provenance.paragraph }}{% endif %} · {{ evidence.provenance.source_type }}</footer></blockquote>{% endfor %}
+      {% for evidence in row.evidence %}<blockquote><p>{{ evidence.quote }}</p><footer>{{ evidence.chunk_id }} · {{ evidence.provenance.filename }}{% if evidence.provenance.page %}, page {{ evidence.provenance.page }}{% endif %}{% if evidence.provenance.table %}, table {{ evidence.provenance.table }}, row {{ evidence.provenance.row }}, cell {{ evidence.provenance.cell }}{% endif %}{% if evidence.provenance.paragraph %}, paragraph {{ evidence.provenance.paragraph }}{% endif %}{% if evidence.provenance.parent_chunk_id %}, characters {{ evidence.provenance.char_start }}–{{ evidence.provenance.char_end }}{% endif %} · {{ evidence.provenance.source_type }}</footer></blockquote>{% endfor %}
     </details>
-    {% if manifest.status == 'awaiting_human_review' %}
+    {% if manifest.status in ['awaiting_human_review', 'revision_required'] %}
     <details><summary>Edit this candidate segment</summary>
-      <form method="post" action="{{ url_for('edit_candidate', run_id=manifest.run_id) }}" class="inline-form">
+      <form method="post" action="{{ url_for('edit_candidate', run_id=manifest.run_id) }}" class="inline-form candidate-edit" data-row='{{ row | tojson }}' data-labels='{{ controlled_labels | tojson }}'>
         <input type="hidden" name="segment" value="{{ row.segment }}">
         <label>Field<select name="field" required>
           {% for field in ['event', 'process', 'causal_order', 'predecessor_segment_ids', 'generalized_category', 'interaction_type', 'sediment_transport_phase'] %}<option value="{{ field }}">{{ field | replace('_', ' ') }}</option>{% endfor %}
         </select></label>
-        <label>New value<input name="new_value" required></label>
+        <label>New value<input name="new_value" value="{{ row.event }}" required><select name="new_value" hidden disabled></select></label>
         <button type="submit">Apply and re-evaluate</button>
       </form>
     </details>
@@ -84,9 +92,12 @@
 </section>
 {% endif %}
 
-{% if manifest.status == 'awaiting_human_review' %}
+{% if candidate and manifest.status in ['awaiting_human_review', 'revision_required'] %}
 <section class="panel review" aria-labelledby="review-heading"><h2 id="review-heading">Human decision required</h2>
-  <p>This candidate passed automatic self-evaluation but is not approved yet.</p>
+  {% if manifest.status == 'awaiting_human_review' %}<p>This candidate passed automatic self-evaluation but is not approved yet.</p>
+  {% else %}<p>This candidate must pass re-evaluation before approval.</p>{% endif %}
+  {% set rounds_left = [0, manifest.max_correction_rounds - manifest.correction_rounds] | max %}
+  <p>{{ rounds_left }} automatic correction round(s) remaining.{% if not rounds_left %} You can still edit the candidate and re-evaluate it.{% endif %}</p>
   <form method="post" action="{{ url_for('decide', run_id=manifest.run_id) }}">
     <label>Global comment<textarea name="global_comment" rows="3"></textarea></label>
     <details><summary>Add an issue or request a correction</summary>
@@ -101,9 +112,9 @@
     </fieldset>
     </details>
     <div class="actions">
-      <button name="decision" value="approve" class="approve">Approve report</button>
-      <button name="decision" value="request_correction">Request correction</button>
-      <button name="decision" value="reject" class="reject">Reject</button>
+      {% if manifest.status == 'awaiting_human_review' %}<button name="decision" value="approve" class="approve">Approve report</button>{% endif %}
+      <button name="decision" value="request_correction" {% if not rounds_left %}disabled{% endif %}>Request correction</button>
+      {% if manifest.status == 'awaiting_human_review' %}<button name="decision" value="reject" class="reject">Reject</button>{% endif %}
     </div>
   </form>
 </section>
@@ -112,4 +123,5 @@
 {% elif manifest.status == 'rejected' %}<p class="message error">This candidate was rejected. No authoritative export was created.</p>
 {% endif %}
 {% endblock %}
-{% block scripts %}{% if manifest.status == 'running' %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endif %}{% endblock %}
+{% block scripts %}{% if manifest.status == 'running' %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endif %}
+<script src="{{ url_for('static', filename='edit.js') }}" defer></script>{% endblock %}

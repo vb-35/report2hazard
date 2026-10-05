@@ -7,6 +7,7 @@ from typing import Any
 
 import pdfplumber
 from docx import Document
+from docx.text.paragraph import Paragraph
 from pypdf import PdfReader
 
 from ..core import normalize_text
@@ -37,25 +38,65 @@ def discover_inputs(input_dir: Path) -> list[Path]:
 def extract_docx(path: Path, doc_id: str, next_id: int) -> tuple[list[dict[str, Any]], int]:
     document = Document(path)
     chunks: list[dict[str, Any]] = []
-    for index, paragraph in enumerate(document.paragraphs, start=1):
-        text = normalize_text(paragraph.text)
-        if not text:
+
+    def walk(container, prefix: str, provenance: dict[str, Any]) -> None:
+        paragraph_index = table_index = 0
+        for block in container.iter_inner_content():
+            if isinstance(block, Paragraph):
+                paragraph_index += 1
+                text = normalize_text(block.text)
+                if text:
+                    chunks.append({
+                        "chunk_id": f"{prefix}-paragraph-{paragraph_index:04d}",
+                        "doc_id": doc_id, "document_id": doc_id,
+                        "file": path.name, "filename": path.name,
+                        "source_kind": "docx", "source_type": "docx",
+                        **provenance, "paragraph": paragraph_index, "text": text,
+                    })
+            else:
+                table_index += 1
+                table_path = f"{prefix}-table-{table_index:04d}"
+                seen = set()
+                for row_index, row in enumerate(block.rows, start=1):
+                    for cell_index, cell in enumerate(row.cells, start=1):
+                        if cell._tc in seen:
+                            continue  # A merged cell appears at multiple grid positions.
+                        seen.add(cell._tc)
+                        walk(cell, f"{table_path}-row-{row_index}-cell-{cell_index}", {
+                            "table": table_index, "table_path": table_path,
+                            "row": row_index, "cell": cell_index,
+                        })
+
+    walk(document, doc_id, {})
+    return chunks, next_id + len(chunks)
+
+
+def split_source_chunks(chunks: list[dict[str, Any]], max_chars: int) -> list[dict[str, Any]]:
+    """Bound original chunks before translation, retaining exact source offsets."""
+    if max_chars < 1:
+        raise PipelineError("source chunk limit must be positive")
+    result = []
+    for chunk in chunks:
+        text = chunk["text"]
+        if len(text) <= max_chars:
+            result.append(chunk)
             continue
-        chunks.append(
-            {
-                "chunk_id": f"{doc_id}-paragraph-{index:04d}",
-                "doc_id": doc_id,
-                "document_id": doc_id,
-                "file": path.name,
-                "filename": path.name,
-                "source_kind": "docx",
-                "source_type": "docx",
-                "paragraph": index,
-                "text": text,
-            }
-        )
-        next_id += 1
-    return chunks, next_id
+        start = 0
+        part = 1
+        while start < len(text):
+            end = min(start + max_chars, len(text))
+            if end < len(text):
+                boundary = text.rfind(" ", start + max_chars // 2, end)
+                if boundary >= start:
+                    end = boundary + 1
+            result.append(chunk | {
+                "chunk_id": f"{chunk['chunk_id']}-part-{part:04d}",
+                "parent_chunk_id": chunk["chunk_id"],
+                "char_start": start, "char_end": end, "text": text[start:end],
+            })
+            start = end
+            part += 1
+    return result
 
 
 def extract_pdf(path: Path, doc_id: str, next_id: int) -> tuple[list[dict[str, Any]], int]:
@@ -106,7 +147,7 @@ def extract_txt(path: Path, doc_id: str, next_id: int) -> tuple[list[dict[str, A
     )
 
 
-def source_agent(input_paths: list[Path], doc_id: str) -> dict[str, Any]:
+def source_agent(input_paths: list[Path], doc_id: str, *, max_chunk_chars: int = 2000) -> dict[str, Any]:
     if not input_paths:
         raise PipelineError("source extraction requires at least one report file")
     paths = [Path(path).resolve() for path in input_paths]
@@ -136,6 +177,7 @@ def source_agent(input_paths: list[Path], doc_id: str) -> dict[str, Any]:
         chunks.extend(new_chunks)
     if not chunks:
         raise PipelineError("source extraction produced no usable chunks")
+    chunks = split_source_chunks(chunks, max_chunk_chars)
     return {
         "doc_id": doc_id,
         "report_id": doc_id,

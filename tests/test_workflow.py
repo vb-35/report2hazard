@@ -497,3 +497,35 @@ def test_unexpected_failure_retains_structured_diagnostics(tmp_path: Path, monke
     assert manifest["errors"][0]["stage"] == "segmentation"
     assert manifest["errors"][0]["type"] == "RuntimeError"
     assert "model unavailable" in manifest["errors"][0]["message"]
+
+
+def test_docx_tables_and_nested_cells_preserve_order_and_provenance(tmp_path):
+    path = tmp_path / "tables.docx"
+    document = Document()
+    document.add_paragraph("Before the flood.")
+    table = document.add_table(rows=1, cols=2)
+    cell = table.cell(0, 0).merge(table.cell(0, 1))
+    cell.text = "The bridge collapsed."
+    cell.add_table(rows=1, cols=1).cell(0, 0).text = "Sediment was released."
+    document.add_paragraph("After the flood.")
+    document.save(path)
+    source = source_agent([path], "report")
+    assert [chunk["text"] for chunk in source["chunks"]] == [
+        "Before the flood.", "The bridge collapsed.", "Sediment was released.", "After the flood.",
+    ]
+    assert len({chunk["chunk_id"] for chunk in source["chunks"]}) == 4
+    chunk = source["chunks"][1]
+    assert (chunk["table"], chunk["row"], chunk["cell"]) == (1, 1, 1)
+    assert source["chunks"][-1]["paragraph"] == 2
+    classified = classified_payload()
+    classified["rows"][0]["evidence"] = [{"chunk_id": chunk["chunk_id"], "quote": chunk["text"]}]
+    candidate = pipeline.build_candidate_report("run", classified, source, 1)
+    assert candidate["rows"][0]["evidence"][0]["provenance"]["table_path"] == chunk["table_path"]
+
+
+@pytest.mark.parametrize("status", ["pass", "revision_required"])
+def test_initial_human_review_matches_manifest_and_evaluation(tmp_path, monkeypatch, status):
+    manifest, _ = run_with_fakes(tmp_path, monkeypatch, [evaluation(status)], max_rounds=0)
+    human = read_json(Path(manifest["artifact_dir"]) / "human_review.json")
+    assert human["status"] == manifest["status"]
+    assert human["self_evaluation_status"] == status
