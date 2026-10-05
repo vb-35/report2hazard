@@ -155,12 +155,16 @@ duplicate, fragmented, unsupported, or misordered causal steps. Categorization i
 sound but a controlled label is semantically wrong. Pass only with no issues and every check true. Do not act as a human reviewer.
 
 Taxonomy precedence: Feedback before other interactions for reverse/backwater response; otherwise Process-structure before
-Process-process before Process-topography. Dysconnectivity for blocking/retention; otherwise Erosion for recruitment,
-Deposition for accumulation, otherwise Transportation. Infrastructure positive/negative means increased/decreased sediment
+Process-process before Process-topography when terrain controls the process. Dysconnectivity for blocking/retention;
+otherwise Erosion for recruitment, Deposition for accumulation, Transportation for evidenced sediment movement.
+Infrastructure positive/negative means increased/decreased sediment
 connectivity, not social benefit/damage. Schnannerbach calibration: an overtopped retention basin increases connectivity;
 a debris-blocked bridge decreases it; Rosanna River backflow is Feedback + Transportation.
-The taxonomy has no not-applicable transport phase. Transportation is the neutral fallback for pre-event conditions and
-triggers with no sediment movement; do not flag it solely for that reason or claim the trigger transported sediment.
+For any controlled field, "unknown" is valid when the field applies but the evidence is insufficient to select a label;
+"not applicable" is valid when the field does not apply to the evidenced step. Check that classification_rationale explains
+the choice. Do not flag these labels solely for being nonspecific, but flag their use when evidence supports a specific label.
+Pre-event conditions and triggers with no sediment movement or retention/blockage should use "not applicable" for transport
+phase; do not accept Transportation as a neutral fallback or equate missing evidence with non-applicability.
 Destruction of a protective structure can be Positive Impact when it increases sediment connectivity; do not call it
 Negative Impact merely because the structure was damaged or its protective function was lost.
 """.strip()

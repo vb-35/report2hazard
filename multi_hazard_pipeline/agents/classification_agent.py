@@ -28,10 +28,13 @@ Exact controlled values:
 - sediment_transport_phase: {labels['sediment_transport_phase']}
 
 Classify the step's effect on sediment connectivity, not ordinary social benefit, damage, or desirability.
+For any controlled field, use "unknown" when the field applies but the evidence is insufficient to select a label.
+Use "not applicable" when the field does not apply to the evidenced step. Explain either choice in classification_rationale;
+do not use these labels instead of a specific label supported by the evidence.
 Precedence and disambiguation:
 - Interaction: Feedback for backflow/backwater/upstream or reverse response; otherwise Process-structure when a structure
   controls or is controlled by the process; otherwise Process-process when one natural process supplies, triggers, or
-  alters another; otherwise Process-topography.
+  alters another; otherwise Process-topography when terrain controls the process.
 - Infrastructure: Positive Impact means overtopping, failure, damage, or destruction increases propagation, transport,
   or dispersion. Negative Impact means retention, trapping, blockage, clogging, or interruption. Use unqualified Impact
   only when a structure is affected and connectivity direction is unclear.
@@ -40,9 +43,9 @@ Precedence and disambiguation:
   natural blockage. Sediment Surge is a sediment-heavy downstream surge. Favourable Topography is terrain/channel form
   amplifying movement.
 - Transport phase: Dysconnectivity for retention/blockage/clogging/interruption; otherwise Erosion for removal/recruitment;
-  otherwise Deposition for settling/accumulation; otherwise Transportation. The taxonomy has no not-applicable phase:
-  use Transportation as its neutral fallback for pre-event conditions and triggers with no sediment movement; this label
-  does not assert that the trigger itself transported sediment.
+  otherwise Deposition for settling/accumulation; otherwise Transportation for evidenced sediment movement.
+  Use "not applicable" for pre-event conditions or triggers with no sediment movement or retention/blockage;
+  use "unknown" when a sediment phase applies but cannot be determined from the evidence.
 
 Representative Schnannerbach examples:
 - "Previous landslide deposits remobilized into the main channel" -> Unstable pre-event conditions | Process-process | Transportation.

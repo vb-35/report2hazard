@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from multi_hazard_pipeline.agents.classification_agent import classification_agent
 from multi_hazard_pipeline.agents.review_agent import deterministic_candidate_evaluation, review_agent
@@ -13,6 +14,8 @@ from multi_hazard_pipeline.agents.segment_agent import (
     stabilize_segment_ids,
 )
 from multi_hazard_pipeline.config import DEFAULT_CONFIG
+from multi_hazard_pipeline.human_review import validate_candidate
+from multi_hazard_pipeline.schemas import CONTROLLED_FIELDS, load_validator
 from multi_hazard_pipeline.schemas import classification_response_schema, validate_review_payload
 from multi_hazard_pipeline.schemas import validate_segment_chain
 
@@ -275,6 +278,24 @@ def test_classification_rejects_unknown_controlled_labels() -> None:
         classification_agent(client, chain(), DEFAULT_CONFIG)
 
 
+@pytest.mark.parametrize("field", CONTROLLED_FIELDS)
+@pytest.mark.parametrize("label", ["unknown", "not applicable"])
+def test_classification_allows_unspecified_labels(field: str, label: str) -> None:
+    rows = [classification_row(item) for item in chain()["segments"]]
+    rows[0][field] = f"  {label.upper()}  "
+    client = PayloadClient([{"rows": rows}])
+    candidate = classification_agent(client, chain(), DEFAULT_CONFIG)
+    assert candidate["rows"][0][field] == label
+    compact_row = {key: value for key, value in candidate["rows"][0].items()
+                   if key in {"segment", *CONTROLLED_FIELDS, "classification_rationale"}}
+    Draft202012Validator(classification_response_schema(DEFAULT_CONFIG)["schema"]).validate({"rows": [compact_row]})
+    exported_row = {key: candidate["rows"][0][key] for key in DEFAULT_CONFIG.export_columns}
+    load_validator(DEFAULT_CONFIG).validate(exported_row)
+    validate_candidate(candidate, source(), DEFAULT_CONFIG)
+    checks, issues = deterministic_candidate_evaluation(candidate, source(), DEFAULT_CONFIG)
+    assert all(checks.values()) and not issues
+
+
 def test_targeted_classification_preserves_unaffected_rows() -> None:
     existing = {"doc_id": "report", "rows": [classification_row(item) for item in chain()["segments"]]}
     replacement = classification_row(chain()["segments"][1], "Negative Impact on permanent or temporary infrastructure")
@@ -324,7 +345,9 @@ def test_whole_report_evaluator_receives_complete_candidate_and_source() -> None
     assert client.calls[0]["user_payload"]["source_chunks"] == bilingual["chunks"]
     assert '"segment_ids":[1]' in client.calls[0]["system_prompt"]
     assert '"segment_ids":[]' in client.calls[0]["system_prompt"]
-    assert "neutral fallback for pre-event conditions" in client.calls[0]["system_prompt"]
+    assert '"unknown" is valid when the field applies' in client.calls[0]["system_prompt"]
+    assert '"not applicable" is valid when the field does not apply' in client.calls[0]["system_prompt"]
+    assert "do not accept Transportation as a neutral fallback" in client.calls[0]["system_prompt"]
     assert "do not call it\nNegative Impact merely because" in client.calls[0]["system_prompt"]
 
 

@@ -22,6 +22,8 @@ TAXONOMY: dict[str, dict[str, Any]] = {
             "Changes in geomorphology",
             "Negative Impact on permanent or temporary infrastructure",
             "Alteration of channel dynamics",
+            "unknown",
+            "not applicable",
         ),
         "aliases": {
             "triggering event.": "Triggering Event",
@@ -32,11 +34,11 @@ TAXONOMY: dict[str, dict[str, Any]] = {
         },
     },
     "interaction_type": {
-        "values": ("Process-process", "Process-topography", "Process-structure", "Feedback"),
+        "values": ("Process-process", "Process-topography", "Process-structure", "Feedback", "unknown", "not applicable"),
         "aliases": {},
     },
     "sediment_transport_phase": {
-        "values": ("Erosion", "Transportation", "Deposition", "Dysconnectivity"),
+        "values": ("Erosion", "Transportation", "Deposition", "Dysconnectivity", "unknown", "not applicable"),
         "aliases": {"disconnectivity": "Dysconnectivity", "transport": "Transportation"},
     },
 }

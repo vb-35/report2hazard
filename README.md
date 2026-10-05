@@ -74,6 +74,8 @@ The correction maximum is run-wide, including automatic and human-requested reru
 
 Candidates in `revision_required` remain editable. Manual edits can be re-evaluated even when automatic correction rounds are exhausted; approval requires a passing evaluation. Invalid or unchanged edits and invalid correction requests display an error without modifying saved artifacts.
 
+All three classification fields allow `unknown` when the field applies but the evidence is insufficient, and `not applicable` when the field does not apply to the evidenced step. The classification rationale must explain the choice. Pre-event conditions or triggers without sediment movement or retention/blockage use `not applicable` for sediment transport phase rather than defaulting to `Transportation`.
+
 DOCX extraction includes tables and nested tables in document order, with table, row, and cell provenance. Long source chunks are divided before translation, retaining their parent ID and zero-based character offsets (exclusive end). Batches count both original and translated text; oversized translated chunks fail explicitly. `LLMConfig.max_request_chars` caps the complete serialized request, including its schema, at 200,000 characters by default. This is a character safeguard, not a token measurement: whole-report evaluation above the ceiling fails before submission, so adjust the ceiling to your provider's capacity when needed.
 
 ## Run states and artifacts
