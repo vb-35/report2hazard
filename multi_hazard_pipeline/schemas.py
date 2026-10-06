@@ -344,9 +344,17 @@ def validate_segment_chain(payload: Any, source: dict[str, Any]) -> None:
 def validate_classification_payload(payload: Any, config: PipelineConfig) -> None:
     if not isinstance(payload, dict) or not isinstance(payload.get("rows"), list):
         raise ValueError("classification payload must be an object with a rows list")
-    for row in payload["rows"]:
+    for index, row in enumerate(payload["rows"], 1):
         if not isinstance(row, dict):
             raise ValueError("classification row must be an object")
+        if "segment" not in row:
+            raise ValueError(f"classification row {index} is missing required field 'segment'; "
+                             "use 'segment', not 'segment_id', and copy the supplied integer ID")
+        if type(row["segment"]) is not int or row["segment"] < 1:
+            raise ValueError(f"classification row {index} field 'segment' must be a positive integer; "
+                             f"got {row['segment']!r}")
+        if "segment_id" in row:
+            raise ValueError(f"classification row {index} has unsupported field 'segment_id'; use only 'segment'")
         canonicalize_row_labels(row, config)
         for field, allowed in (
             ("generalized_category", config.generalized_categories),

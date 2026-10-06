@@ -16,11 +16,13 @@ from unittest.mock import patch
 from urllib import error, request
 
 from multi_hazard_pipeline import human_review, llm, pipeline
+from multi_hazard_pipeline.agents.classification_agent import classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES
 from multi_hazard_pipeline.config import DEFAULT_CONFIG
 from multi_hazard_pipeline.core import read_json
 from multi_hazard_pipeline.errors import PipelineError
 from multi_hazard_pipeline.payloads import compact_json
+from multi_hazard_pipeline.schemas import validate_classification_payload
 from test_regressions import SmokeClient, blocked_network
 
 
@@ -195,6 +197,63 @@ def check_repairs(root):
         assert endpoint.call_args_list[1].args[0].data == endpoint.call_args_list[2].args[0].data
 
 
+def check_classification_repairs(root):
+    text = "Blocks partially destroyed the nets."
+    segments = {"doc_id": "nets", "segments": [
+        {"segment": 1, "causal_order": 1, "predecessor_segment_ids": [], "event": "Rockfall",
+         "process": text, "evidence": [{"chunk_id": "source-1", "quote": text}]}
+    ]}
+    valid = {"rows": [{"segment": 1, "generalized_category": "Impact on permanent or temporary infrastructure",
+                       "interaction_type": "Process-structure", "sediment_transport_phase": "Transportation",
+                       "classification_rationale": ["T2: Damage alone does not establish connectivity direction."]}]}
+    faulty = deepcopy(valid)
+    faulty["rows"][0]["segment_id"] = faulty["rows"][0].pop("segment")
+    raw = compact_json(faulty)
+    model = client(root, "classification-repair")
+    before = deepcopy(segments)
+    with patch.object(request, "urlopen", side_effect=[Response(completion(raw + "\nCorrection note")),
+                                                       Response(completion(raw)),
+                                                       Response(completion(compact_json(valid)))]) as endpoint:
+        result = classification_agent(model, segments, DEFAULT_CONFIG)
+    assert segments == before and result["rows"][0]["segment"] == 1
+    assert "segment_id" not in result["rows"][0] and result["rows"][0]["evidence"] == before["segments"][0]["evidence"]
+    sent = [json.loads(call.args[0].data) for call in endpoint.call_args_list]
+    assert '"segment":1' in sent[0]["messages"][0]["content"]
+    assert all(body["messages"][:2] == sent[0]["messages"] and body["response_format"] == sent[0]["response_format"]
+               for body in sent[1:])
+    assert sent[2]["messages"][2]["content"] == raw
+    assert "missing required field 'segment'" in sent[2]["messages"][3]["content"]
+    assert "use 'segment', not 'segment_id'" in sent[2]["messages"][3]["content"]
+    assert [row["outcome"] for row in timings(model)] == ["parsing_error", "validation_error", "pass"]
+
+    # Correction calls must report the wrong key before reporting missing requested IDs.
+    issue = {"stage": "categorization", "segment_ids": [1], "code": "reassess",
+             "message": "Reassess net damage.", "suggested_action": "Use only the source evidence."}
+    model = client(root, "classification-correction-repair")
+    with patch.object(request, "urlopen", side_effect=[Response(completion(raw)),
+                                                       Response(completion(compact_json(valid)))]) as endpoint:
+        corrected = classification_agent(model, segments, DEFAULT_CONFIG, segment_ids=[1],
+                                         existing=result, review_issues=[issue])
+    assert corrected == result
+    feedback = json.loads(endpoint.call_args_list[1].args[0].data)["messages"][-1]["content"]
+    assert "missing required field 'segment'" in feedback and "omitted requested segments" not in feedback
+
+    for value in ("1", True, 0, -1):
+        invalid = deepcopy(valid)
+        invalid["rows"][0]["segment"] = value
+        with TestCase().assertRaisesRegex(ValueError, "field 'segment' must be a positive integer"):
+            validate_classification_payload(invalid, DEFAULT_CONFIG)
+    invalid = deepcopy(valid)
+    invalid["rows"][0]["segment_id"] = 1
+    with TestCase().assertRaisesRegex(ValueError, "unsupported field 'segment_id'"):
+        validate_classification_payload(invalid, DEFAULT_CONFIG)
+    model = client(root, "classification-invalid-limit")
+    with patch.object(request, "urlopen", return_value=Response(completion(raw))) as endpoint:
+        with TestCase().assertRaisesRegex(PipelineError, "validation_error.*3 attempt.*missing required field 'segment'"):
+            classification_agent(model, segments, DEFAULT_CONFIG)
+        assert endpoint.call_count == 3
+
+
 def check_parsing_and_partial_output(root):
     malformed = '{"ok":tru'
     partial = completion('{"ok":true}')
@@ -289,6 +348,7 @@ def main():
         root = Path(directory)
         check_request_failures(root)
         check_repairs(root)
+        check_classification_repairs(root)
         check_parsing_and_partial_output(root)
         check_human_timing_and_failed_save(root)
     print("Offline LLM checks passed: permanent/transient failures, bounded retries, repair context/size, usage, timing and save gates.")

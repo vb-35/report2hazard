@@ -19,7 +19,12 @@ from ..schemas import (
 def _classification_prompt(config: PipelineConfig) -> str:
     labels = config.controlled_labels()
     return f"""
-Categorize supplied segments without rewriting them. Return JSON only as {{"rows":[...]}}. For ordinary calls return
+Categorize supplied segments without rewriting them. Return one complete JSON object only, with no Markdown fences,
+commentary, or revisions after it. Each row must have exactly these keys:
+{{"rows":[{{"segment":1,"generalized_category":"...","interaction_type":"...",
+"sediment_transport_phase":"...","classification_rationale":["..."]}}]}}.
+Copy the integer "segment" from the supplied step; the field is "segment", never "segment_id".
+For ordinary calls return
 one row per supplied segment; correction calls follow requested_segment_ids and the correction rules below. For each result,
 return only its segment ID, generalized_category, interaction_type, sediment_transport_phase, and a short
 classification_rationale list. Python retains the original causal order, event, process, and evidence unchanged.
@@ -53,9 +58,7 @@ def validate_classification_against_segments(
     validate_classification_payload(payload, config)
     source_by_id = {item["segment"]: item for item in segments.get("segments", [])}
     expected = set(source_by_id) if expected_segment_ids is None else set(expected_segment_ids)
-    returned = [row.get("segment") for row in payload["rows"]]
-    if any(not isinstance(value, int) for value in returned):
-        raise ValueError("classification segment IDs must be integers")
+    returned = [row["segment"] for row in payload["rows"]]
     if len(returned) != len(set(returned)):
         raise ValueError("classification contains a segment more than once")
     if set(returned) != expected:
@@ -114,7 +117,9 @@ def classification_agent(
     requested_segments = [item for item in segments["segments"] if item["segment"] in requested_set]
 
     def validate(payload: Any) -> None:
-        returned = {row.get("segment") for row in payload.get("rows", [])} if isinstance(payload, dict) else set()
+        # Validate row shape before deriving correction coverage, so repair gets the actual field error.
+        validate_classification_payload(payload, config)
+        returned = {row["segment"] for row in payload["rows"]}
         if review_issues and not requested_set <= returned:
             raise ValueError(f"classification omitted requested segments: {sorted(requested_set - returned)}")
         validate_classification_against_segments(payload, segments, config, returned if review_issues else requested_set)
