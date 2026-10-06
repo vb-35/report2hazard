@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 import traceback
 from typing import Any
@@ -347,6 +348,8 @@ def _apply_candidate_edits_unlocked(
     save_manifest(run_dir, manifest)
     try:
         llm_client = client or ChatClient.from_config(config.llm)
+        if isinstance(llm_client, ChatClient):
+            llm_client = replace(llm_client, timing_path=run_dir / "timings.jsonl")
         evaluation = review_agent(llm_client, candidate, bilingual_source, config)
     except Exception as exc:
         record_operation_failure(run_dir, manifest, "self_evaluation", exc)
@@ -437,7 +440,7 @@ def _request_correction_unlocked(
     synthetic = {
         "status": "revision_required",
         "summary": message,
-        "issues": [
+        "issues": history["latest_evaluation"].get("issues", []) + [
             {
                 "stage": requested_stage,
                 "segment_ids": ids,
@@ -461,6 +464,8 @@ def _request_correction_unlocked(
     save_manifest(run_dir, manifest)
     try:
         llm_client = client or ChatClient.from_config(config.llm)
+        if isinstance(llm_client, ChatClient):
+            llm_client = replace(llm_client, timing_path=run_dir / "timings.jsonl")
         segments, classified, candidate, history = correct_until_terminal(
             client=llm_client,
             source=source,

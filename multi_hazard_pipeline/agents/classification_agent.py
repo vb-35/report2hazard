@@ -3,10 +3,11 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Iterable
 
-from ..config import PipelineConfig
+from ..config import TAXONOMY_DECISION_RULES, PipelineConfig
 from ..core import normalize_text
 from ..errors import PipelineError
 from ..llm import ChatClient
+from ..payloads import correction_payload, segment_payload, source_payload
 from ..schemas import (
     IMMUTABLE_SEGMENT_FIELDS,
     canonicalize_row_labels,
@@ -18,7 +19,8 @@ from ..schemas import (
 def _classification_prompt(config: PipelineConfig) -> str:
     labels = config.controlled_labels()
     return f"""
-Categorize each supplied segment without rewriting it. Return JSON only as {{"rows":[...]}}. For each supplied segment,
+Categorize supplied segments without rewriting them. Return JSON only as {{"rows":[...]}}. For ordinary calls return
+one row per supplied segment; correction calls follow requested_segment_ids and the correction rules below. For each result,
 return only its segment ID, generalized_category, interaction_type, sediment_transport_phase, and a short
 classification_rationale list. Python retains the original causal order, event, process, and evidence unchanged.
 
@@ -27,32 +29,17 @@ Exact controlled values:
 - interaction_type: {labels['interaction_type']}
 - sediment_transport_phase: {labels['sediment_transport_phase']}
 
-Classify the step's effect on sediment connectivity, not ordinary social benefit, damage, or desirability.
-For any controlled field, use "unknown" when the field applies but the evidence is insufficient to select a label.
-Use "not applicable" when the field does not apply to the evidenced step. Explain either choice in classification_rationale;
-do not use these labels instead of a specific label supported by the evidence.
-Precedence and disambiguation:
-- Interaction: Feedback for backflow/backwater/upstream or reverse response; otherwise Process-structure when a structure
-  controls or is controlled by the process; otherwise Process-process when one natural process supplies, triggers, or
-  alters another; otherwise Process-topography when terrain controls the process.
-- Infrastructure: Positive Impact means overtopping, failure, damage, or destruction increases propagation, transport,
-  or dispersion. Negative Impact means retention, trapping, blockage, clogging, or interruption. Use unqualified Impact
-  only when a structure is affected and connectivity direction is unclear.
-- Triggering Event is the active initiator. Material Mobilization recruits sediment. Changes in geomorphology requires
-  explicit channel/landform reshaping. Post-event redistribution is delayed or secondary. Natural dam failure is only a
-  natural blockage. Sediment Surge is a sediment-heavy downstream surge. Favourable Topography is terrain/channel form
-  amplifying movement.
-- Transport phase: Dysconnectivity for retention/blockage/clogging/interruption; otherwise Erosion for removal/recruitment;
-  otherwise Deposition for settling/accumulation; otherwise Transportation for evidenced sediment movement.
-  Use "not applicable" for pre-event conditions or triggers with no sediment movement or retention/blockage;
-  use "unknown" when a sediment phase applies but cannot be determined from the evidence.
+{TAXONOMY_DECISION_RULES}
 
-Representative Schnannerbach examples:
-- "Previous landslide deposits remobilized into the main channel" -> Unstable pre-event conditions | Process-process | Transportation.
-- "Sediment retention basin filled and was overtopped by debris flow" -> Positive Impact on permanent or temporary infrastructure | Process-structure | Transportation.
-- "Bridge near Rosanna River became blocked by debris" -> Negative Impact on permanent or temporary infrastructure | Process-structure | Dysconnectivity.
-- "Backflow from Rosanna River caused upstream flooding" -> Alteration of channel dynamics | Feedback | Transportation.
+Give a short evidence-based classification_rationale, identifying the relevant rule and supporting quote or mechanism.
+Treat review_issues and correction_instruction as claims to reassess against the supplied evidence and these rules,
+not authoritative replacement labels. Accept a proposed replacement only if supported; otherwise retain or select the supported label,
+including an uncertainty label where appropriate, and briefly explain why. Match quoted evidence rather than chunk IDs
+from another request. Neither a reviewer proposal nor a structure's protective purpose establishes connectivity direction.
 Never paraphrase or otherwise change a source segment.
+For structured review_issues, use previous_answer and the entire supplied chain to reassess consequences.
+Return rows for all requested_segment_ids and any OTHER affected segments whose labels or rationale need correction.
+Omit unchanged, unrequested classifications; Python retains them. Correction evidence IDs are permanent source IDs.
 """.strip()
 
 
@@ -105,6 +92,10 @@ def classification_agent(
     segment_ids: Iterable[int] | None = None,
     existing: dict[str, Any] | list[dict[str, Any]] | None = None,
     correction_instruction: str | None = None,
+    *,
+    review_issues: list[dict[str, Any]] | None = None,
+    source: dict[str, Any] | None = None,
+    previous_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_by_id = {item["segment"]: item for item in segments.get("segments", [])}
     if len(source_by_id) != len(segments.get("segments", [])) or not source_by_id:
@@ -123,14 +114,22 @@ def classification_agent(
     requested_segments = [item for item in segments["segments"] if item["segment"] in requested_set]
 
     def validate(payload: Any) -> None:
-        validate_classification_against_segments(payload, segments, config, requested_set)
+        returned = {row.get("segment") for row in payload.get("rows", [])} if isinstance(payload, dict) else set()
+        if review_issues and not requested_set <= returned:
+            raise ValueError(f"classification omitted requested segments: {sorted(requested_set - returned)}")
+        validate_classification_against_segments(payload, segments, config, returned if review_issues else requested_set)
+
+    correction = correction_payload(previous_source or source or {"chunks": []}, {"rows": existing_rows}, review_issues) if review_issues else {}
+    references = {citation["chunk_id"]: citation["chunk_id"] for item in segments["segments"] for citation in item["evidence"]}
 
     payload = client.complete_json(
         system_prompt=_classification_prompt(config),
         user_payload={
-            "doc_id": segments["doc_id"],
-            "controlled_labels": config.controlled_labels(),
-            "segments": requested_segments,
+            "segments": segment_payload(segments["segments"] if review_issues else requested_segments,
+                                        references=references if review_issues else None),
+            **correction,
+            **({"requested_segment_ids": requested,
+                "source": source_payload(source["chunks"], permanent_ids=True)[0] if source else None} if review_issues else {}),
             "correction_instruction": normalize_text(correction_instruction or "") or None,
         },
         validate=validate,
@@ -142,7 +141,7 @@ def classification_agent(
     }
 
     if existing_rows:
-        unaffected = set(source_by_id) - requested_set
+        unaffected = set(source_by_id) - set(replacements)
         existing_payload = {"rows": [deepcopy(row) for row in existing_rows if row.get("segment") in unaffected]}
         validate_classification_against_segments(existing_payload, segments, config, unaffected)
         replacements.update(

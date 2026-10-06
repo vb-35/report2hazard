@@ -10,6 +10,7 @@ from ..core import normalize_text
 from ..errors import PipelineError
 from ..language import analyze_language
 from ..llm import ChatClient
+from ..payloads import affected_segment_ids, correction_payload, resolve_chunk_ids, source_payload
 from ..schemas import SOURCE_LANGUAGE_LABELS, SUPPORTED_SOURCE_LANGUAGES, translation_response_schema
 from .segment_agent import batch_chunks
 
@@ -23,11 +24,14 @@ Translate every supplied report chunk into English and return JSON only as
 {"translations":[{"chunk_id":"...","source_language":"English|German|French|Italian|Mixed","translated_text":"..."}]}.
 
 Rules:
-- Return exactly one result per chunk, in the supplied order, using the exact chunk_id.
+- Return exactly one result per chunk, in the supplied order, using the exact request-local chunk_id. Respect document boundaries and supplied locations.
 - Use the local language hints. Resolve Unknown text only within English, German, French, or Italian; unsupported or still unresolved substantive text is an explicit error, never an invented translation.
 - Translate mixed chunks as a whole, retaining their existing English passages unchanged except whitespace normalization. Label them Mixed. English text must pass through unchanged except whitespace normalization; do not semantically rewrite it.
 - Translate faithfully. Do not summarize, classify, omit, combine, explain, or invent information.
 - Preserve named places, torrents, rivers, structures, numbers, units, dates, directions, negation, uncertainty, and causal relationships.
+- For corrections, start with review_issues and the previous_answer. Repair the supplied affected passages, using the
+  complete previous chain to understand consequences. Retain valid wording within those passages. Correction chunk IDs
+  are permanent source IDs shared with previous_answer; Python retains translations outside the supplied chunks.
 - Use the supplied terminology mappings as contextual guidance, not mechanical string replacement. Select the term matching the source meaning and preserve distinctions, including German Murgang (debris flow) versus Hangmure (slope debris flow).
 """.strip()
 
@@ -125,22 +129,55 @@ def translation_agent(
     *,
     config: PipelineConfig = DEFAULT_CONFIG,
     previous_analysis: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None = None,
+    previous_answer: dict[str, Any] | None = None,
+    review_issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    correction = correction_payload(previous or source, previous_answer or {}, review_issues) if review_issues else {}
+    affected_chunks = None
+    if previous is not None and review_issues and previous_answer:
+        try:
+            validate_translated_source(previous, source)
+        except ValueError:
+            pass  # Invalid prior translations require a full rerun.
+        else:
+            affected = affected_segment_ids([issue for issue in review_issues if issue["stage"] == "translation"], previous_answer)
+            rows = [row for row in previous_answer.get("rows", []) if affected and row["segment"] in affected]
+            source_by_id = {chunk["chunk_id"]: normalize_text(chunk["text"]).casefold() for chunk in source["chunks"]}
+            citations = [citation for row in rows for citation in row["evidence"]]
+            if citations and all(row["evidence"] for row in rows) and all(
+                                 normalize_text(citation["quote"]) and citation["chunk_id"] in source_by_id and normalize_text(citation["quote"]).casefold()
+                                 in source_by_id[citation["chunk_id"]] for citation in citations):
+                affected_chunks = {citation["chunk_id"] for citation in citations}
     analysis = analyze_language(source, config, previous_analysis)
     translated = deepcopy(source)
     translated["language_analysis"] = analysis
     pending = []
+    previous_by_id = {chunk["chunk_id"]: chunk for chunk in (previous or {}).get("chunks", [])}
     for original, chunk in zip(source["chunks"], translated["chunks"], strict=True):
         detail = analysis["chunks"][chunk["chunk_id"]]
         chunk["source_language"] = detail["source_language"]
         chunk["translated_text"] = normalize_text(chunk["text"])
         if (analysis["decision"] == "translate" and detail["total_alphabetic_count"]
                 and detail["source_language"] != "English"):
+            if affected_chunks is not None and chunk["chunk_id"] not in affected_chunks:
+                prior = previous_by_id[chunk["chunk_id"]]
+                chunk["source_language"] = prior["source_language"]
+                chunk["translated_text"] = prior["translated_text"]
+                detail["translation_applied"] = (previous.get("language_analysis", {}).get("chunks", {})
+                                                 .get(chunk["chunk_id"], {}).get("translation_applied", True))
+                continue
             pending.append(original)
     glossary = load_translation_glossary() if pending else []
     by_id = {chunk["chunk_id"]: chunk for chunk in translated["chunks"]}
     for batch in batch_chunks(pending, 5000):
+        projected, references = source_payload(batch, permanent_ids=bool(review_issues))
+        for item, chunk in zip(projected["chunks"], batch, strict=True):
+            detail = analysis["chunks"][chunk["chunk_id"]]
+            item.update(source_language=detail["source_language"], languages=detail["languages"])
+
         def validate(payload: Any) -> None:
+            payload = resolve_chunk_ids(payload, references, translations=True)
             validate_translation_results(payload, {"chunks": batch})
             for result in payload["translations"]:
                 hint = analysis["chunks"][normalize_text(result["chunk_id"])]["source_language"]
@@ -157,13 +194,8 @@ def translation_agent(
         payload = client.complete_json(
             system_prompt=TRANSLATION_PROMPT,
             user_payload={
-                "doc_id": source["doc_id"],
-                "chunks": [
-                    {"chunk_id": chunk["chunk_id"], "text": chunk["text"],
-                     "source_language": analysis["chunks"][chunk["chunk_id"]]["source_language"],
-                     "languages": analysis["chunks"][chunk["chunk_id"]]["languages"]}
-                    for chunk in batch
-                ],
+                **projected,
+                **correction,
                 "terminology_mappings": project_glossary(glossary, languages),
                 "correction_instruction": normalize_text(correction_instruction or "") or None,
             },
@@ -171,6 +203,7 @@ def translation_agent(
             response_schema=translation_response_schema(),
         )
         validate(payload)
+        payload = resolve_chunk_ids(payload, references, translations=True)
         analysis["translation_request_count"] += 1
         for result in payload["translations"]:
             chunk = by_id[normalize_text(result["chunk_id"])]

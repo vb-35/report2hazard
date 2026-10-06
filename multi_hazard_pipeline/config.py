@@ -44,6 +44,34 @@ TAXONOMY: dict[str, dict[str, Any]] = {
 }
 
 
+# Shared by classification and independent semantic review; IDs anchor disagreements.
+TAXONOMY_DECISION_RULES = """
+Taxonomy decision rules:
+- T1 Evidence: classify the evidenced step, preserving uncertainty. For each field, use "unknown" when it applies but
+  evidence cannot select a label; use "not applicable" when it does not apply. Choose a specific label when supported.
+  Explain the choice briefly with evidence.
+- T2 Infrastructure: classify the effect on sediment connectivity, not social benefit, harm, or physical damage alone.
+  Use "Positive Impact on permanent or temporary infrastructure" for evidenced increased sediment passage, release,
+  propagation, or dispersion; "Negative Impact on permanent or temporary infrastructure" for evidenced decreased
+  sediment passage through retention, trapping, or obstruction; "Impact on permanent or temporary infrastructure"
+  when a structure is affected or involved but connectivity direction is unclear. Failure/overtopping is positive only
+  with evidence of increased passage; damage alone proves neither direction. Road closure blocks traffic, not necessarily sediment.
+- T3 Causal role: "Unstable pre-event conditions" describes antecedent instability or stored material;
+  "Triggering Event" the active initiator; "Material Mobilization" active sediment recruitment;
+  "Favourable Topography" terrain/channel form amplifying movement; "Natural dam failure" failure of a natural blockage;
+  "Sediment Surge" a sediment-heavy downstream surge; "Post-event redistribution" delayed or secondary redistribution;
+  "Changes in geomorphology" explicit channel/landform reshaping; "Alteration of channel dynamics" changed flow behavior.
+- T4 Interaction precedence: Feedback for reverse/backwater/upstream response; otherwise Process-structure when a
+  structure controls or is affected by the process; otherwise Process-process when a natural process supplies, triggers,
+  or alters another; otherwise Process-topography when terrain controls the process. Apply T1 if none is evidenced.
+- T5 Transport phase: Dysconnectivity for evidenced sediment retention/blockage/interruption; otherwise Erosion for
+  removal/recruitment; otherwise Deposition for settling/accumulation; otherwise Transportation for evidenced sediment
+  movement. Traffic interruption or infrastructure damage alone is not Dysconnectivity. Pre-event conditions or triggers
+  without sediment movement or retention/blockage use "not applicable"; an applicable but undetermined phase uses "unknown".
+  Determine phase separately from infrastructure direction; do not infer one field solely from another label.
+""".strip()
+
+
 def api_base_url_from_env() -> str:
     value = os.environ.get("TW_LLM_API_BASE_URL", "").strip()
     if value:

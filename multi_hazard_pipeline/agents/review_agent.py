@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..config import PipelineConfig
+from ..config import TAXONOMY_DECISION_RULES, PipelineConfig
 from ..core import normalize_text
 from ..language import language_prompt_context
 from ..llm import ChatClient
+from ..payloads import segment_payload, source_payload
 from ..schemas import review_response_schema, validate_review_payload
 
 
@@ -128,14 +129,15 @@ def review_agent(client: ChatClient, candidate: dict[str, Any], source: dict[str
         }
 
     system_prompt = """
-Evaluate the complete candidate report as one ordered causal chain. Inspect the full chain and supplied source chunks,
+Evaluate the complete candidate report as an ordered set of causal steps, allowing independent branches and roots. Inspect the full report and supplied source chunks,
 not isolated rows. Return JSON only with status pass or revision_required, summary, issues, and all five checks.
 The checks object must contain exactly these Boolean keys on every response:
 {"causal_chain_coherent":true,"evidence_verified":true,"segments_complete":true,
 "segments_unique":true,"categories_valid":true}. Set relevant values false when revision is required; never omit a key.
 Every issue MUST contain all five fields, including segment_ids as an array of integer segment numbers:
 {"stage":"categorization","segment_ids":[1],"code":"wrong_category",
-"message":"Segment 1 uses the wrong category.","suggested_action":"Reclassify segment 1."}
+"message":"Segment 1: generalized_category=Negative Impact on permanent or temporary infrastructure; c1 'Blocks partially destroyed the nets'; T2 requires evidenced decreased sediment passage, which this quote does not establish.",
+"suggested_action":"Reassess connectivity direction under T2; use a replacement only if supported."}
 For a whole-report issue with no affected segment, use "segment_ids":[], never omit it or use null.
 The stage value must be exactly one of "translation", "segmentation", or "categorization".
 
@@ -146,8 +148,11 @@ Assess semantic facts that deterministic code cannot decide reliably:
   passthrough under skip_translation is not a translation defect; never request translation merely for it.
   Missing or incorrect interpretation of these passages in the English event/process fields is a segmentation issue.
   Legacy artifacts without flags retain the contract that translated_text is an English translation.
+- When no separate translated_text is supplied, interpret text directly in its original language, including minority-language passages; identical translations are omitted.
+- Chunk IDs and document IDs are request-local. Respect document boundaries, filenames, and locations when interpreting the chain and citations.
 - Are every segment's event and process written in English?
-- Does the complete causal chain make sense, with coherent order and direct predecessors?
+- Is each predecessor link supported by source evidence of a direct causal relationship? Chronological order,
+  adjacent descriptions, and shared locations alone do not prove causation. Independent branches and empty predecessors are valid.
 - Are important causal-process steps missing?
 - Are steps duplicated or unnecessarily fragmented rather than representing distinct causal roles?
 - Is every claim supported by its evidence in meaning (citation IDs and quote occurrence are already code-checked)?
@@ -159,20 +164,14 @@ whole-report omission), a concise message, and an actionable correction instruct
 duplicate, fragmented, unsupported, or misordered causal steps. Categorization issues apply only when the segment chain is
 sound but a controlled label is semantically wrong. Pass only with no issues and every check true. Do not act as a human reviewer.
 
-Taxonomy precedence: Feedback before other interactions for reverse/backwater response; otherwise Process-structure before
-Process-process before Process-topography when terrain controls the process. Dysconnectivity for blocking/retention;
-otherwise Erosion for recruitment, Deposition for accumulation, Transportation for evidenced sediment movement.
-Infrastructure positive/negative means increased/decreased sediment
-connectivity, not social benefit/damage. Schnannerbach calibration: an overtopped retention basin increases connectivity;
-a debris-blocked bridge decreases it; Rosanna River backflow is Feedback + Transportation.
-For any controlled field, "unknown" is valid when the field applies but the evidence is insufficient to select a label;
-"not applicable" is valid when the field does not apply to the evidenced step. Check that classification_rationale explains
-the choice. Do not flag these labels solely for being nonspecific, but flag their use when evidence supports a specific label.
-Pre-event conditions and triggers with no sediment movement or retention/blockage should use "not applicable" for transport
-phase; do not accept Transportation as a neutral fallback or equate missing evidence with non-applicability.
-Destruction of a protective structure can be Positive Impact when it increases sediment connectivity; do not call it
-Negative Impact merely because the structure was damaged or its protective function was lost.
-""".strip()
+Independently determine which labels the source supports using the shared rules below before comparing the candidate;
+the classifier's rationale is a claim to verify, not evidence or authority. For every categorization disagreement, the
+message must identify the segment, field/current label, source chunk ID and short quote, and rule ID with an explanation
+of what the current label violates. If the problem is absence of evidence for a direction, say what the source establishes
+and what is missing. Suggest a replacement only when supported; otherwise request evidence-based reassessment using T1/T2.
+Do not flag a supported uncertainty label merely for being nonspecific. Keep summary/messages concise; omit deliberation.
+""".strip() + "\n\n" + TAXONOMY_DECISION_RULES
+    projected, references = source_payload(source.get("chunks", []), language_prompt_context(source))
 
     def validate(payload: Any) -> None:
         if isinstance(payload, dict) and payload.get("status") == "revision_required" and isinstance(payload.get("checks"), dict) and isinstance(payload.get("issues"), list):
@@ -191,12 +190,13 @@ Negative Impact merely because the structure was damaged or its protective funct
     payload = client.complete_json(
         system_prompt=system_prompt,
         user_payload={
-            "doc_id": candidate.get("doc_id", source.get("doc_id")),
             "controlled_labels": config.controlled_labels(),
-            "candidate_report": candidate,
-            "source_chunks": source.get("chunks", []),
-            "language_context": language_prompt_context(source),
-            "deterministic_checks": deterministic_checks,
+            "candidate_report": {"rows": segment_payload(
+                candidate["rows"], review=True,
+                references={permanent: local for local, permanent in references.items()},
+            )},
+            "documents": projected["documents"],
+            "source_chunks": projected["chunks"],
         },
         validate=validate,
         response_schema=review_response_schema(config),

@@ -24,6 +24,7 @@ from .core import normalize_text, read_json, write_json
 from .errors import PipelineError
 from .language import language_settings, language_summary, recorded_language_config
 from .llm import ChatClient, append_timing
+from .schemas import IMMUTABLE_SEGMENT_FIELDS, validate_segment_chain
 
 
 REPORT_GROUPING_RULE = (
@@ -268,11 +269,35 @@ def initial_evaluation_history(evaluation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def issue_instruction(issues: list[dict[str, Any]]) -> str:
-    return "\n".join(
-        f"{issue['code']}: {issue['message']} Suggested action: {issue['suggested_action']}"
-        for issue in issues
-    )
+def classification_correction_ids(
+    previous: dict[str, Any], revised: dict[str, Any], issues: list[dict[str, Any]],
+    previous_source: dict[str, Any], source: dict[str, Any],
+) -> list[int]:
+    """Invalidate changed steps and their event/causal neighbors, retaining independent work."""
+    old = {row["segment"]: row for row in previous["rows"]}
+    new = {row["segment"]: row for row in revised["segments"]}
+    if any(not issue["segment_ids"] or not set(issue["segment_ids"]) <= set(old) for issue in issues):
+        return sorted(new)
+    prior_chunks = {chunk["chunk_id"]: chunk for chunk in previous_source["chunks"]}
+    changed_chunks = {chunk["chunk_id"] for chunk in source["chunks"]
+                      if any(chunk.get(field) != prior_chunks.get(chunk["chunk_id"], {}).get(field)
+                             for field in ("text", "translated_text"))}
+    affected = set(old) - set(new)
+    affected.update(value for issue in issues if issue["stage"] != "categorization" for value in issue["segment_ids"])
+    categorization_ids = {value for issue in issues if issue["stage"] == "categorization" for value in issue["segment_ids"]}
+    affected.update(segment_id for segment_id, row in new.items()
+                    if segment_id not in old or any(row[field] != old[segment_id].get(field) for field in IMMUTABLE_SEGMENT_FIELDS)
+                    or any(item["chunk_id"] in changed_chunks for item in row["evidence"]))
+    # ponytail: conservatively reassess an entire event; narrow scope only if redundant classification calls matter.
+    rows = list(old.values()) + list(new.values())
+    while True:
+        events = {row["event"] for row in rows if row["segment"] in affected}
+        expanded = affected | {row["segment"] for row in rows
+                               if row["event"] in events or affected.intersection(row["predecessor_segment_ids"])}
+        expanded.update(value for row in rows if row["segment"] in expanded for value in row["predecessor_segment_ids"])
+        if expanded == affected:
+            return sorted(set(new) & (affected | categorization_ids))
+        affected = expanded
 
 
 def record_translation_outcome(manifest: dict[str, Any], translated: dict[str, Any]) -> None:
@@ -280,7 +305,7 @@ def record_translation_outcome(manifest: dict[str, Any], translated: dict[str, A
     if analysis:
         manifest["language_summary"] = language_summary(analysis)
     manifest["stages"]["translation"] = (
-        "skipped" if analysis and analysis["translation_request_count"] == 0 else "completed"
+        "skipped" if analysis and not any(item["translation_applied"] for item in analysis["chunks"].values()) else "completed"
     )
 
 
@@ -309,70 +334,41 @@ def correct_until_terminal(
         translation_issues = [item for item in issues if item["stage"] == "translation"]
         segmentation_issues = [item for item in issues if item["stage"] == "segmentation"]
         before_ids = [item["segment"] for item in segments["segments"]]
+        previous_source = bilingual_source
+        previous_answer = classified
         if translation_issues:
             stages_rerun = ["translation", "segmentation", "categorization"]
             set_stage(artifact_dir, manifest, "translation", progress=35)
             bilingual_source = translation_agent(
                 client,
                 source,
-                correction_instruction=issue_instruction(translation_issues),
                 config=config,
                 previous_analysis=bilingual_source.get("language_analysis"),
+                previous=bilingual_source,
+                previous_answer=previous_answer,
+                review_issues=issues,
             )
             record_translation_outcome(manifest, bilingual_source)
             write_json(artifact_dir / "translated.json", bilingual_source)
-            set_stage(artifact_dir, manifest, "segmentation", progress=50)
-            revised_segments = segment_agent(
-                client,
-                bilingual_source,
-                config,
-                correction_instruction=(
-                    issue_instruction(segmentation_issues + translation_issues)
-                    if bilingual_source.get("language_analysis", {}).get("decision") == "skip_translation"
-                    else issue_instruction(segmentation_issues) if segmentation_issues else None
-                ),
-            )
-            segments = stabilize_segment_ids(revised_segments, segments)
-            write_json(artifact_dir / "segments.json", segments)
-            set_stage(artifact_dir, manifest, "categorization", progress=65)
-            classified = classification_agent(
-                client, segments, config,
-                correction_instruction=issue_instruction(issues),
-            )
         elif segmentation_issues:
             stages_rerun = ["segmentation", "categorization"]
-            set_stage(artifact_dir, manifest, "segmentation", progress=55)
-            revised_segments = segment_agent(
-                client,
-                bilingual_source,
-                config,
-                correction_instruction=issue_instruction(segmentation_issues),
-            )
-            segments = stabilize_segment_ids(revised_segments, segments)
-            write_json(artifact_dir / "segments.json", segments)
-            set_stage(artifact_dir, manifest, "categorization", progress=65)
-            classified = classification_agent(client, segments, config)
         else:
             stages_rerun = ["categorization"]
-            affected = sorted(
-                {
-                    int(segment_id)
-                    for issue in issues
-                    if issue["stage"] == "categorization"
-                    for segment_id in issue["segment_ids"]
-                }
+        if translation_issues or segmentation_issues:
+            set_stage(artifact_dir, manifest, "segmentation", progress=55)
+            revised_segments = segment_agent(
+                client, bilingual_source, config,
+                previous_answer=previous_answer, review_issues=issues, previous_source=previous_source,
             )
-            if not affected:
-                raise PipelineError("categorization correction did not identify affected segments")
-            set_stage(artifact_dir, manifest, "categorization", progress=65)
-            classified = classification_agent(
-                client,
-                segments,
-                config,
-                segment_ids=affected,
-                existing=classified,
-                correction_instruction=issue_instruction(issues),
-            )
+            segments = stabilize_segment_ids(revised_segments, segments)
+            validate_segment_chain(segments, source)
+            write_json(artifact_dir / "segments.json", segments)
+        affected = classification_correction_ids(previous_answer, segments, issues, previous_source, bilingual_source)
+        set_stage(artifact_dir, manifest, "categorization", progress=65)
+        classified = classification_agent(
+            client, segments, config, segment_ids=affected, existing=classified,
+            review_issues=issues, source=bilingual_source, previous_source=previous_source,
+        )
         write_json(artifact_dir / "classified.json", classified)
         candidate = build_candidate_report(
             manifest["run_id"], classified, source, candidate["candidate_revision"] + 1

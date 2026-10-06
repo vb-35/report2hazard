@@ -8,6 +8,7 @@ from ..core import normalize_text
 from ..errors import PipelineError
 from ..language import language_prompt_context
 from ..llm import ChatClient
+from ..payloads import affected_segment_ids, correction_payload, resolve_chunk_ids, segment_payload, source_payload, text_payload
 from ..schemas import (
     CitationQuoteMismatch,
     citation_verification_response_schema,
@@ -18,21 +19,25 @@ from ..schemas import (
 
 
 SEGMENTATION_PROMPT = """
-Define one coherent ordered causal chain for the complete qualitative hazard report. Return JSON only as
+Define a coherent ordered set of causal-process steps for the complete qualitative hazard report, allowing independent branches. Return JSON only as
 {"segments":[{"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"...","process":"...","evidence":[{"chunk_id":"...","quote":"..."}]}]}.
 
 Rules:
 - A segment is one distinct causal-process step: what happened, why it happened, or what it caused. It is not every sentence, number, observation, or location.
-- Order segments by causal order, not document order. Use contiguous causal_order values beginning at 1. segment is a positive integer ID; Python preserves IDs for unchanged steps across revisions.
-- predecessor_segment_ids may be empty; otherwise cite only real, earlier segment numbers that directly enable the step.
+- Order causes before their evidenced effects. Use contiguous causal_order values beginning at 1; this is a list order, not proof of causation. segment is a positive integer ID; Python preserves IDs for unchanged steps across revisions.
+- predecessor_segment_ids may be empty, including for later steps; otherwise cite only real, earlier segment numbers whose direct causal relationship is supported by source evidence. Chronological order, adjacent sentences, or a shared location alone do not prove causation. Preserve uncertain causal claims as uncertain rather than adding established links. Independent branches and multiple roots are valid.
 - Every segment needs at least one evidence citation. Use only supplied chunk IDs and copy an exact quote or a whitespace-normalized substring from that chunk.
 - Use translated_text for semantic interpretation. When translation_applied is false, this is original-language passthrough: interpret all minority-language passages directly, including German, French, Italian, and mixed text. Do not omit them. event and process must always be written in English.
+- When no separate translated_text is supplied, interpret text directly in its original language; identical translations are omitted. Chunk and document IDs are request-local. Respect document boundaries, filenames, and source locations.
 - Evidence quote must remain in the original source language: copy it only from the chunk's text field, never from translated_text.
 - PDF extraction may contain replacement characters (�) or broken words. Quote a short contiguous fragment exactly as supplied in text; do not repair its spelling or accents in the quote.
 - Merge repeated descriptions and quantities for the same causal step and retain every useful citation. Merge a cause with its immediate consequence only when the reference abstraction treats them as one statement.
 - Separate materially different causal steps, especially when causal role, structure interaction, or erosion/transport/deposition/connectivity changes.
 - Reconcile facts across the whole input. Do not invent a step or evidence to reach a desired count. An empty batch may return an empty segments list.
 - Keep event and process concise. Preserve named torrents, rivers, structures, and causal meaning.
+- For full rerun corrections, start with review_issues and previous_answer; reuse supported previous work while
+  re-extracting all supplied source. Return only steps evidenced by this batch, using its supplied chunk IDs.
+  Correction chunk IDs are permanent source IDs; review_chunk_references resolves local IDs in reviewer feedback.
 
 Representative Schnannerbach example:
 Input chunks: c1="Previous landslide deposits were remobilized into the main channel. Feeder channels delivered large sediment volumes into Schnannerbach.";
@@ -40,11 +45,21 @@ c2="The sediment retention basin filled and was overtopped by debris flow.";
 c3="The bridge near the Rosanna River became blocked by debris. Backflow from the Rosanna River caused upstream flooding."
 Output: {"segments":[
  {"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Previous landslide deposits remobilized into the main channel","evidence":[{"chunk_id":"c1","quote":"Previous landslide deposits were remobilized into the main channel"}]},
- {"segment":2,"causal_order":2,"predecessor_segment_ids":[1],"event":"Schnannerbach","process":"Feeder channels delivered large sediment volumes into Schnannerbach","evidence":[{"chunk_id":"c1","quote":"Feeder channels delivered large sediment volumes into Schnannerbach"}]},
- {"segment":3,"causal_order":3,"predecessor_segment_ids":[2],"event":"Schnannerbach","process":"Sediment retention basin filled and was overtopped by debris flow","evidence":[{"chunk_id":"c2","quote":"The sediment retention basin filled and was overtopped by debris flow"}]},
- {"segment":4,"causal_order":4,"predecessor_segment_ids":[3],"event":"Schnannerbach","process":"Bridge near Rosanna River became blocked by debris","evidence":[{"chunk_id":"c3","quote":"The bridge near the Rosanna River became blocked by debris"}]},
- {"segment":5,"causal_order":5,"predecessor_segment_ids":[4],"event":"Schnannerbach","process":"Backflow from Rosanna River caused upstream flooding","evidence":[{"chunk_id":"c3","quote":"Backflow from the Rosanna River caused upstream flooding"}]}
+ {"segment":2,"causal_order":2,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Feeder channels delivered large sediment volumes into Schnannerbach","evidence":[{"chunk_id":"c1","quote":"Feeder channels delivered large sediment volumes into Schnannerbach"}]},
+ {"segment":3,"causal_order":3,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Sediment retention basin filled and was overtopped by debris flow","evidence":[{"chunk_id":"c2","quote":"The sediment retention basin filled and was overtopped by debris flow"}]},
+ {"segment":4,"causal_order":4,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Bridge near Rosanna River became blocked by debris","evidence":[{"chunk_id":"c3","quote":"The bridge near the Rosanna River became blocked by debris"}]},
+ {"segment":5,"causal_order":5,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Backflow from Rosanna River caused upstream flooding","evidence":[{"chunk_id":"c3","quote":"Backflow from the Rosanna River caused upstream flooding"}]}
 ]}
+These observations do not establish links between segments. Segment 5 preserves the stated backflow-to-flooding cause
+within one step; the input does not say that the bridge blockage caused the backflow.
+
+Chronology/branch example:
+Input: c1="At noon, a rockfall damaged a road. Later, heavy rain mobilized sediment in an unrelated tributary.
+That mobilized sediment filled the tributary's retention basin. Separately, coastal waves eroded a bank."
+Steps in list order (each with a quote of its corresponding input sentence):
+1 road damage, predecessors=[]; 2 tributary sediment mobilization, predecessors=[];
+3 tributary basin filling, predecessors=[2]; 4 coastal bank erosion, predecessors=[].
+"Later" establishes timing, not a 1->2 cause. Only the explicit "That mobilized sediment" supports 2->3.
 """.strip()
 
 
@@ -53,9 +68,14 @@ Consolidate the supplied batch-level causal steps into one coherent report-level
 For each output segment, provide segment, causal_order, predecessor_segment_ids, event, process, and source_segment_ids.
 Use contiguous segment and causal_order values beginning at 1. Each source_segment_id must appear exactly once across
 the entire output; combine IDs only when they describe the same causal step. Preserve every distinct causal step,
-order them by causality, and use only earlier output segment numbers as predecessors. Write event and process in English.
+order evidenced causes before effects, and use only earlier output segment numbers as predecessors when the supplied
+evidence supports a direct causal link. Chronology, adjacency, or shared location alone does not establish causation;
+preserve uncertainty, independent branches, and empty predecessor lists, including for later steps. Write event and process in English.
 Do not return evidence quotes: Python attaches every original citation from the listed source_segment_ids.
 Do not invent facts or source IDs.
+When review_issues and previous_answer are supplied, preserve all feedback while reassessing the complete chain's
+consequences and predecessor links. Current batch_segments are the source steps to consolidate; their IDs may differ
+from previous_answer. Categorization feedback informs causal meaning; Python reassesses labels afterward.
 """.strip()
 
 
@@ -69,14 +89,26 @@ Return only JSON with supported, fragment_ids, and a concise reason. Python will
 """.strip()
 
 
+SEGMENT_CORRECTION_PROMPT = """
+Start with the defects in review_issues and revise previous_answer's existing report chain. Return the COMPLETE revised
+chain, retaining valid steps and citations. Follow each affected step's consequences across the whole chain, including
+other affected segments and their predecessor links. You may add, remove, merge, reorder, or change steps anywhere
+when the supplied source supports it. Keep unchanged step IDs; use new unique positive IDs for added steps.
+Segmentation and categorization feedback may coexist: preserve the meaning needed to reassess labels, but return
+only segments; Python categorizes the result separately. Copy evidence from original text, preserving source provenance.
+Correction chunk IDs are permanent source IDs shared with previous_answer. Do not treat feedback as authority over evidence.
+""".strip()
+
+
 def batch_chunks(chunks: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
+    """Budget the text fields actually sent; the client caps the full JSON request."""
     if max_chars < 1:
         raise PipelineError("batch character limit must be positive")
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_size = 0
     for chunk in chunks:
-        size = len(chunk["text"]) + len(chunk.get("translated_text", ""))
+        size = sum(len(text) for text in text_payload(chunk).values())
         if size > max_chars:
             raise PipelineError(
                 f"chunk {chunk['chunk_id']} contains {size} text characters, exceeding the "
@@ -190,20 +222,24 @@ def _verify_nonliteral_citation(
     chunks: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     source_index = next(index for index, chunk in enumerate(chunks) if normalize_text(chunk["chunk_id"]) == mismatch.chunk_id)
-    source_file = chunks[source_index].get("filename")
-    fragments: list[dict[str, str]] = []
+    cited = chunks[source_index]
+    source_document = (cited.get("document_id", cited.get("doc_id")), cited.get("filename", cited.get("file")))
+    fragments: list[dict[str, Any]] = []
     for index in range(max(0, source_index - 1), min(len(chunks), source_index + 2)):
         chunk = chunks[index]
-        if chunk.get("filename") != source_file:
+        if (chunk.get("document_id", chunk.get("doc_id")), chunk.get("filename", chunk.get("file"))) != source_document:
             continue
         content = normalize_text(chunk["text"])
         for start in range(0, len(content), 250):
             fragment = content[start:start + 350]
             if fragment and (len(fragment) >= 40 or start == 0):
                 fragments.append({
-                    "fragment_id": f"f{index}-{start}",
+                    "fragment_id": f"f{len(fragments) + 1}",
                     "chunk_id": chunk["chunk_id"],
                     "text": fragment,
+                    "cited_chunk": chunk["chunk_id"] == mismatch.chunk_id,
+                    **{key: chunk[key] for key in ("page", "paragraph", "table", "table_path", "row", "cell", "char_start", "char_end")
+                       if key in chunk},
                 })
     by_id = {fragment["fragment_id"]: fragment for fragment in fragments}
 
@@ -224,8 +260,9 @@ def _verify_nonliteral_citation(
         system_prompt=CITATION_VERIFICATION_PROMPT,
         user_payload={
             "event": item["event"], "process": item["process"],
-            "proposed_quote": mismatch.quote, "cited_chunk_id": mismatch.chunk_id,
-            "fragments": fragments,
+            "proposed_quote": mismatch.quote,
+            "filename": chunks[source_index].get("filename", chunks[source_index].get("file", "")),
+            "fragments": [{key: value for key, value in fragment.items() if key != "chunk_id"} for fragment in fragments],
         },
         validate=validate,
         response_schema=citation_verification_response_schema(),
@@ -278,10 +315,16 @@ def collect_segments_from_chunks(
     starting_batch_index: int = 1,
     correction_instruction: str | None = None,
     language_context: dict[str, Any] | None = None,
+    correction: dict[str, Any] | None = None,
+    revise_chain: bool = False,
 ) -> int:
     batch_index = starting_batch_index
     for batch in batch_chunks(chunks, max_chars):
+        projected, references = source_payload(batch, language_context, permanent_ids=bool(correction))
+        validated_segments: list[dict[str, Any]] = []
+
         def validate(payload: Any) -> None:
+            payload = resolve_chunk_ids(payload, references)
             batch_ids = {normalize_text(chunk["chunk_id"]) for chunk in batch}
             for item in payload["segments"]:
                 for citation in item["evidence"]:
@@ -290,6 +333,7 @@ def collect_segments_from_chunks(
             for _ in range(sum(len(item["evidence"]) for item in payload["segments"]) + 1):
                 try:
                     validate_segment_chain(payload, {"chunks": chunks})
+                    validated_segments[:] = payload["segments"]
                     return
                 except CitationQuoteMismatch as mismatch:
                     item = next(value for value in payload["segments"] if value["segment"] == mismatch.segment)
@@ -301,23 +345,17 @@ def collect_segments_from_chunks(
                     item["evidence"][index:index + 1] = _verify_nonliteral_citation(client, item, mismatch, chunks)
             raise ValueError("citation verification did not resolve all nonliteral quotes")
 
-        payload = client.complete_json(
-            system_prompt=SEGMENTATION_PROMPT,
+        client.complete_json(
+            system_prompt=SEGMENTATION_PROMPT + ("\n\n" + SEGMENT_CORRECTION_PROMPT if revise_chain else ""),
             user_payload={
-                "doc_id": doc_id,
-                "batch_index": batch_index,
-                "chunks": batch,
-                "language_context": {
-                    "decision": (language_context or {}).get("decision", "legacy_english_translation"),
-                    "chunks": {chunk["chunk_id"]: (language_context or {}).get("chunks", {}).get(chunk["chunk_id"], {})
-                               for chunk in batch},
-                },
+                **projected,
+                **(correction or {}),
                 "correction_instruction": normalize_text(correction_instruction or "") or None,
             },
             validate=validate,
             response_schema=segment_response_schema(),
         )
-        reindexed = _reindex_chain(payload["segments"], len(segments) + 1)
+        reindexed = _reindex_chain(validated_segments, len(segments) + 1)
         segments.extend(reindexed)
         batch_index += 1
     return batch_index
@@ -328,9 +366,34 @@ def segment_agent(
     source: dict[str, Any],
     config: PipelineConfig,
     correction_instruction: str | None = None,
+    *,
+    previous_answer: dict[str, Any] | None = None,
+    review_issues: list[dict[str, Any]] | None = None,
+    previous_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     chunks = select_semantic_chunks(source["chunks"])
-    max_chars = max(1, config.batch_max_chars // 2) if correction_instruction else config.batch_max_chars
+    correction = correction_payload(previous_source or source, previous_answer or {}, review_issues) if review_issues else None
+    scoped = previous_answer and affected_segment_ids(
+        [issue for issue in review_issues or [] if issue["stage"] in {"translation", "segmentation"}], previous_answer,
+    ) is not None
+    if scoped:
+        revised: list[dict[str, Any]] = []
+        try:
+            collect_segments_from_chunks(
+                client, doc_id=source["doc_id"], chunks=chunks, segments=revised,
+                max_chars=max(config.batch_max_chars, sum(sum(len(text) for text in text_payload(chunk).values()) for chunk in chunks)),
+                correction_instruction=correction_instruction, correction=correction, revise_chain=True,
+                language_context=language_prompt_context(source),
+            )
+        except PipelineError as exc:
+            if "exceeding max_request_chars=" not in str(exc):
+                raise
+            # The complete repair request is too large; use the normal batched full rerun.
+        else:
+            if not revised:
+                raise PipelineError("segment correction produced no causal-process segments")
+            return {"doc_id": source["doc_id"], "status": "pass", "segments": revised}
+    max_chars = config.batch_max_chars
     batches = batch_chunks(chunks, max_chars)
     preliminary: list[dict[str, Any]] = []
     collect_segments_from_chunks(
@@ -341,6 +404,7 @@ def segment_agent(
         max_chars=max_chars,
         correction_instruction=correction_instruction,
         language_context=language_prompt_context(source),
+        correction=correction,
     )
     preliminary = consolidate_exact_duplicates(preliminary)
     validate_segment_chain({"segments": preliminary}, source)
@@ -353,8 +417,9 @@ def segment_agent(
         consolidated = client.complete_json(
             system_prompt=CONSOLIDATION_PROMPT,
             user_payload={
-                "doc_id": source["doc_id"],
-                "batch_segments": preliminary,
+                "batch_segments": segment_payload(preliminary, references={citation["chunk_id"]: citation["chunk_id"]
+                    for item in preliminary for citation in item["evidence"]} if correction else None),
+                **(correction or {}),
                 "correction_instruction": normalize_text(correction_instruction or "") or None,
             },
             validate=validate_consolidated,
