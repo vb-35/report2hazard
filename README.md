@@ -94,20 +94,20 @@ Statuses are `running`, `revision_required`, `awaiting_human_review`, `rejected`
 
 Each extraction run directory preserves `source.json`, `translated.json`, `segments.json`, `classified.json`, `candidate_report.json`, `self_evaluation.json`, `human_review.json`, and `manifest.json` as stages complete. Collection parents hold their preparation manifest and child-run links. Only approved runs add authoritative `final_rows.json` and `final_rows.csv`.
 
-Run deterministic tests without an API key. The suite blocks network connections and uses fake model responses:
+Run the small offline research smoke check without an API key. It exercises the real pipeline with fixed model responses, covering extraction/provenance, translation/glossary, evidence, classification coverage, human edits and approval, and CSV/JSON export. Network access is blocked:
 
 ```powershell
-python -m pytest -q
+python test_regressions.py
 ```
 
 OCR, geospatial/GIS support, and external knowledge retrieval are deliberately deferred. Scanned-PDF OCR is not supported, and Tesseract `.traineddata` files are not required.
 
 ## Repository contents and local data
 
-The repository includes the application, tests, and the required `Translation resources/multi_hazard_keywords.csv` glossary. Keep that CSV at its existing path.
+The repository includes the application, one research smoke check, and the required `Translation resources/multi_hazard_keywords.csv` glossary. Keep that CSV at its existing path. Keep future checks focused on research results and data integrity; detailed UI, launcher, and exhaustive edge-case suites are unnecessary for this project.
 
 All local outputs belong in `results/`, which is excluded by `.gitignore`. The launcher and CLI default to this folder; PDF splitting defaults to `results/split/`. Explicit CLI output directories remain supported. Preserved source documents live in `results/inputs/`, spreadsheet exports in `results/exports/`, and supporting logs and split inputs in `results/run_support/`. Run directories are directly inside `results/` so the review interface can find them. Obsolete local files are collected in `results/obsolete/`. Python environments and caches are also ignored.
 
-The test suite uses synthetic inputs. One optional PDF regression test is skipped when `results/inputs/FAI/Example_Complete/Ereignisdokumentation2018.pdf` is absent. `check_example.py` is a local integration check requiring `results/inputs/tmp_single_input/Schnannerbach_extract1.docx` and a live API key; it replaces `results/example_check` when run.
+The smoke check uses synthetic inputs and temporary outputs. `check_example.py` is an optional local integration check requiring `results/inputs/tmp_single_input/Schnannerbach_extract1.docx` and a live API key; it replaces `results/example_check` when run.
 
 Processing requires `TW_LLM_API_BASE_URL` and `TW_LLM_API_KEY` in the environment before starting the application. Use a compatible chat-completions service; the client appends `/chat/completions` to the base URL. Configure the model in `multi_hazard_pipeline/config.py`. 
