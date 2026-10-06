@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import hashlib
+import json
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -16,9 +17,10 @@ from .core import read_json, run_lock
 from .errors import PipelineError
 from .human_review import apply_candidate_edits, approve_run, reject_run, request_correction
 from .llm import ChatClient
-from .pipeline import create_run, execute_run, new_run_id, save_manifest, utc_now
+from .pipeline import create_run, execute_run, invalidate_results, new_run_id, save_manifest, utc_now
 from .agents.source_agent import discover_inputs
 from .splitter import split_event_reports
+from .workspace import workspace_data
 
 
 SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
@@ -60,7 +62,7 @@ def _segment_comments() -> list[dict[str, Any]]:
     issue_type = request.form.get("issue_type", "").strip()
     comment = request.form.get("segment_comment", "").strip()
     segment = request.form.get("comment_segment", "").strip()
-    if not issue_type and not comment and not segment:
+    if not issue_type and not comment:
         return []
     if not issue_type:
         raise PipelineError("an issue type is required for a per-segment comment")
@@ -71,9 +73,12 @@ def _record_worker_failure(run_dir: Path, task: str, exc: Exception) -> None:
     try:
         manifest = read_json(run_dir / "manifest.json")
         manifest["status"] = "failed"
-        manifest["current_stage"] = task
-        if task in manifest.get("stages", {}):
-            manifest["stages"][task] = "failed"
+        failed_stage = task if task in manifest.get("stages", {}) else manifest.get("current_stage", task)
+        if failed_stage not in manifest.get("stages", {}):
+            failed_stage = task
+        manifest["current_stage"] = failed_stage
+        if failed_stage in manifest.get("stages", {}):
+            manifest["stages"][failed_stage] = "failed"
         manifest.setdefault("errors", []).append(
             {
                 "stage": task,
@@ -90,12 +95,13 @@ def _record_worker_failure(run_dir: Path, task: str, exc: Exception) -> None:
         pass
 
 
-def _mark_queued_work(run_dir: Path, stage: str) -> None:
+def _mark_queued_work(run_dir: Path, stage: str, *, editing: bool = False) -> None:
     with run_lock(run_dir):
         manifest = read_json(run_dir / "manifest.json")
         if manifest.get("status") not in {"awaiting_human_review", "revision_required"}:
             raise PipelineError("human review work requires a reviewable candidate")
         manifest["status"] = "running"
+        invalidate_results(run_dir, manifest, "segmentation" if editing else stage)
         manifest["current_stage"] = stage
         if stage in manifest.get("stages", {}):
             manifest["stages"][stage] = "running"
@@ -247,6 +253,7 @@ def create_app(
             evaluation=_optional_json(run_dir, "self_evaluation.json"),
             human=_optional_json(run_dir, "human_review.json"),
             controlled_labels=config.controlled_labels(),
+            workspace=workspace_data(run_dir),
             error=error,
         )
 
@@ -266,9 +273,40 @@ def create_app(
                     "errors",
                     "warnings",
                     "updated_at",
+                    "stages",
                 )
             }
         )
+
+    @app.get("/runs/<run_id>/workspace")
+    def run_workspace(run_id: str):
+        try:
+            since = json.loads(request.args.get("since", "{}"))
+        except ValueError:
+            abort(400)
+        if not isinstance(since, dict):
+            abort(400)
+        try:
+            response = jsonify(workspace_data(_run_dir(app, run_id), since))
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except (ValueError, OSError, RuntimeError):
+            return jsonify(error="Saved results are temporarily unavailable; retrying."), 503
+
+    @app.get("/runs/<run_id>/source/<document_id>")
+    def source_file(run_id: str, document_id: str):
+        manifest = read_json(_run_dir(app, run_id) / "manifest.json")
+        # Identifiers are canonical indexes into this run's allowlist, never filesystem paths.
+        if not re.fullmatch(r"0|[1-9][0-9]{0,9}", document_id):
+            abort(404)
+        inputs = manifest.get("inputs", [])
+        index = int(document_id)
+        if index >= len(inputs):
+            abort(404)
+        path = Path(inputs[index].get("path", ""))
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+            abort(404)
+        return send_file(path, as_attachment=path.suffix.lower() != ".pdf", download_name=inputs[index].get("filename", path.name))
 
     @app.post("/runs/<run_id>/decision")
     def decide(run_id: str):
@@ -329,7 +367,7 @@ def create_app(
             edits = [{"segment": segment, "field": field, "new_value": raw_value}]
             with run_lock(run_dir):
                 apply_candidate_edits(run_dir, edits, config=config, validate_only=True)
-                _mark_queued_work(run_dir, "self_evaluation")
+                _mark_queued_work(run_dir, "self_evaluation", editing=True)
             _submit(
                 app,
                 "human_edit_evaluation",

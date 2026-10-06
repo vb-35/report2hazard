@@ -1,135 +1,90 @@
 {% extends "base.html" %}
 {% block title %}{{ manifest.run_id }} · Multi-hazard review{% endblock %}
 {% block content %}
-<nav><a href="{{ url_for('index') }}">← All runs</a></nav>
+<div id="workspace" data-url="{{ url_for('run_workspace', run_id=manifest.run_id) }}" data-labels='{{ controlled_labels | tojson }}'>
+<header class="workspace-header">
+<a href="{{ url_for('index') }}">← All runs</a>
 <h1>{{ manifest.inputs | map(attribute='filename') | join(', ') or manifest.run_id }}</h1>
-<p class="hint">{{ manifest.run_id }}</p>
+<div id="run-status" aria-live="polite"><strong id="status-name">{{ status_label }}</strong> · <span id="current-stage">{{ manifest.current_stage | replace('_', ' ') }}</span> · Correction <span id="correction-round">{{ manifest.correction_rounds }} / {{ manifest.max_correction_rounds }}</span></div>
+<ol id="stage-states" class="stage-states" aria-label="Processing stages"></ol>
+<p id="connection-status" class="warning" role="status" hidden></p>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
-{% if manifest.status == 'running' %}<p class="message">Your report is being processed. Progress updates automatically; you can return to this report later.</p>
-{% elif manifest.status == 'awaiting_human_review' %}<p class="message">Review the events and their evidence below, then <a href="#review-heading">approve or request changes</a>.</p>
-{% elif manifest.status == 'approved' %}<p class="message">Your report is approved. <a href="#exports">Download your results</a>.</p>
-{% elif manifest.status == 'revision_required' %}<p class="message">This report needs changes. Edit the candidate below or request another correction if rounds remain.</p>
-{% elif manifest.status == 'failed' %}<p class="message">This report needs attention. Check the details below before <a href="{{ url_for('index') }}">starting a new report</a>.</p>{% endif %}
-
-{% if manifest.child_runs %}
-<section class="panel"><h2>Event reports</h2><p>Each report is processed and reviewed separately. Open a report to see its progress.</p>
-  <ul>{% for child in manifest.child_runs %}<li><a href="{{ url_for('run_detail', run_id=child.run_id) }}">{{ child.filename }}</a></li>{% endfor %}</ul>
+<details id="diagnostics"><summary>Warnings and errors <span id="diagnostic-count"></span></summary><div id="diagnostic-items"></div></details>
+<div id="child-runs">{% for child in manifest.child_runs or [] %}<a href="{{ url_for('run_detail', run_id=child.run_id) }}">{{ child.filename }}</a>{% endfor %}</div>
+</header>
+<div class="workspace-panes">
+<section class="segments-pane" aria-labelledby="chain-heading">
+<h2 id="chain-heading">Segments &amp; evidence</h2>
+<p id="revision-state" class="hint" role="status"></p>
+<div class="table-filters">
+<label>Search segments<input id="segment-search" type="search" placeholder="Event, process, evidence…"></label>
+<details class="filter-options"><summary>Category &amp; issue filters</summary>
+<label>Generalized category<select id="category-filter"><option value="">All categories</option></select></label>
+<label>Interaction type<select id="interaction-filter"><option value="">All interactions</option></select></label>
+<label>Sediment phase<select id="phase-filter"><option value="">All phases</option></select></label>
+<label class="checkbox"><input id="issues-filter" type="checkbox">Only segments with issues</label>
+</details>
+</div>
+<div class="table-scroll" tabindex="0" aria-label="Segment table, scrollable">
+<table id="segment-table"><thead><tr><th scope="col">Causal order</th><th scope="col">Segment ID</th><th scope="col">Event</th><th scope="col">Generalized category</th><th scope="col">Interaction type</th><th scope="col">Sediment transport phase</th><th scope="col">Evidence count</th><th scope="col">Evaluation issues</th></tr></thead><tbody></tbody></table>
+<p id="table-empty" class="hint">Segments will appear after segmentation.</p>
+</div>
+<div id="selection-notice" role="status"></div>
+<div class="detail-scroll" tabindex="0" aria-label="Segment details and editing, scrollable">
+<section id="segment-detail" aria-label="Selected segment details"></section>
+<details id="edit-panel"><summary>Edit this candidate segment</summary>
+<p id="edit-notice" class="hint" role="status"></p>
+<form method="post" action="{{ url_for('edit_candidate', run_id=manifest.run_id) }}" class="candidate-edit">
+<input type="hidden" name="segment">
+<label>Field<select name="field" required>{% for field in ['event', 'process', 'causal_order', 'predecessor_segment_ids', 'generalized_category', 'interaction_type', 'sediment_transport_phase'] %}<option value="{{ field }}">{{ field | replace('_', ' ') }}</option>{% endfor %}</select></label>
+<label>New value<input name="new_value" required><select name="new_value" hidden disabled></select></label>
+<div class="actions"><button type="submit">Apply and re-evaluate</button><button type="button" id="discard-edit" class="secondary">Discard unsaved edit</button></div>
+</form>
+</details>
+<details class="evaluation-panel"><summary>Report-level evaluation issues &amp; audit history</summary><div id="report-evaluation"></div><div id="audit-history"></div></details>
+</div>
 </section>
-{% endif %}
-
-<section id="run-status" class="status state-{{ manifest.status }}" data-status-url="{{ url_for('run_status', run_id=manifest.run_id) }}" data-status="{{ manifest.status }}" aria-live="polite">
-  <div><span class="badge" id="status-name">{{ status_label }}</span></div>
-  <dl>
-    <div><dt>Stage</dt><dd id="current-stage">{{ manifest.current_stage | replace('_', ' ') | title }}</dd></div>
-    <div><dt>Progress</dt><dd><progress id="progress" max="100" value="{{ manifest.progress or 0 }}">{{ manifest.progress or 0 }}%</progress> <span id="progress-text">{{ manifest.progress or 0 }}%</span></dd></div>
-    <div><dt>Correction round</dt><dd id="correction-round">{{ manifest.correction_rounds or 0 }} / {{ manifest.max_correction_rounds }}</dd></div>
-  </dl>
+<section class="reader-pane" aria-labelledby="reader-heading">
+<div class="section-heading"><h2 id="reader-heading">Report reader</h2><button id="expand-reader" type="button" class="secondary" aria-expanded="false">Expand reader</button></div>
+<div class="reader-controls">
+<label>Document<select id="document-selector"></select></label>
+<label>Mode<select id="reader-mode"><option value="original">Original</option><option value="translation">Translation</option><option value="compare">Compare</option><option value="pdf">Original PDF</option></select></label>
+<a id="source-access" class="button secondary" hidden>Download source file</a>
+</div>
+<p class="hint">Extracted text preserves available source references. It does not reproduce the original document layout.</p>
+<p id="reader-state" class="hint"></p><p id="citation-state" role="status"></p>
+<div id="citation-choice" hidden></div>
+<div id="text-reader" class="reader-scroll" tabindex="0" aria-label="Report passages, scrollable"></div>
+<iframe id="pdf-reader" title="Original PDF document" hidden></iframe>
 </section>
-
-{% if manifest.errors %}
-<section class="panel error" aria-labelledby="errors-heading"><h2 id="errors-heading">Errors</h2>
-  {% for error in manifest.errors %}<p><strong>{{ error.stage or error.type }}:</strong> {{ error.message }}</p>{% endfor %}
+</div>
+<section id="review-actions" class="review-actions" aria-labelledby="review-heading">
+<div class="section-heading"><h2 id="review-heading">Human review</h2><div id="exports">
+<a id="candidate-download" class="button secondary" href="{{ url_for('download', run_id=manifest.run_id, artifact='candidate_report.json') }}" {% if not candidate %}hidden{% endif %}>Candidate JSON</a>
+<a class="button approved-export" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.csv') }}" {% if manifest.status != 'approved' %}hidden{% endif %}>Approved CSV</a>
+<a class="button approved-export" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.json') }}" {% if manifest.status != 'approved' %}hidden{% endif %}>Approved JSON</a>
+</div></div>
+<p id="review-state">{{ [0, manifest.max_correction_rounds - manifest.correction_rounds] | max }} automatic correction round(s) remaining.</p>
+<form id="decision-form" method="post" action="{{ url_for('decide', run_id=manifest.run_id) }}">
+<div class="actions">
+<details><summary>Comments &amp; correction request</summary>
+<div class="review-inputs">
+<label>Global comment<textarea name="global_comment" rows="2"></textarea></label>
+<fieldset><legend>Optional per-segment issue</legend>
+<label>Segment ID<input type="number" min="1" name="comment_segment"></label>
+<label>Issue type<select name="issue_type"><option value="">None</option>{% for item in ['missing', 'duplicate', 'unsupported', 'misordered', 'miscategorized'] %}<option>{{ item }}</option>{% endfor %}</select></label>
+<label>Comment<input name="segment_comment"></label>
+</fieldset>
+<fieldset><legend>Correction routing</legend><label>Stage<select name="requested_stage"><option value="translation">Translation</option><option value="segmentation">Segmentation</option><option value="categorization">Categorization</option></select></label><label>Affected segment IDs (comma-separated)<input name="segment_ids"></label></fieldset>
+</div>
+</details>
+<div class="actions"><button name="decision" value="approve" class="approve" {% if manifest.status != 'awaiting_human_review' %}hidden{% endif %}>{{ 'Approve report' if manifest.status == 'awaiting_human_review' else 'Approve' }}</button><button name="decision" value="request_correction" {% if manifest.correction_rounds >= manifest.max_correction_rounds %}disabled{% endif %}>Request correction</button><button name="decision" value="reject" class="reject" {% if manifest.status != 'awaiting_human_review' %}hidden{% endif %}>Reject</button></div>
+</div>
+</form>
+<p id="action-error" class="error" role="alert" hidden></p>
 </section>
-{% endif %}
-{% if manifest.language_summary %}
-{% set language = manifest.language_summary %}
-<section class="panel"><h2>Report languages</h2>
-  <p>{{ language.languages | join(', ') or 'Unresolved' }}.
-  {% if language.english_share_lower is not none %}English share: {{ (100 * language.english_share_lower) | round(1) }}%–{{ (100 * language.english_share_upper) | round(1) }}%.{% endif %}
-  {{ language.reason }} Translation requests: {{ language.translation_request_count }}.</p>
-</section>
-{% endif %}
-{% if manifest.warnings %}
-<section class="panel warning"><h2>Warnings</h2><ul>{% for warning in manifest.warnings %}<li>{{ warning.message if warning is mapping else warning }}</li>{% endfor %}</ul></section>
-{% endif %}
-
-<section class="panel" aria-labelledby="inputs-heading"><h2 id="inputs-heading">Source files</h2>
-  <ul>{% for item in manifest.inputs %}<li>{{ item.filename }} ({{ item.source_type }})</li>{% endfor %}</ul>
-</section>
-
-{% if evaluation %}
-<section class="panel" aria-labelledby="evaluation-heading"><details><summary id="evaluation-heading">Automatic quality checks</summary>
-  {% for item in evaluation.evaluations | reverse %}
-    {% set result = item.evaluation %}
-    <details {% if loop.first %}open{% endif %}>
-      <summary>{{ item.trigger or ('round ' ~ item.round) }} — {{ result.status }}</summary>
-      <p>{{ result.summary }}</p>
-      {% if result.checks %}<dl class="checks">{% for name, passed in result.checks.items() %}<div><dt>{{ name | replace('_', ' ') }}</dt><dd>{{ 'pass' if passed else 'fail' }}</dd></div>{% endfor %}</dl>{% endif %}
-      {% if result.issues %}<ul>{% for issue in result.issues %}<li><strong>{{ issue.stage }} / {{ issue.code }}</strong>: {{ issue.message }} (segments {{ issue.segment_ids | join(', ') }})</li>{% endfor %}</ul>{% endif %}
-    </details>
-  {% endfor %}
-</details></section>
-{% endif %}
-
-{% if candidate %}
-<section aria-labelledby="chain-heading"><div class="section-heading"><h2 id="chain-heading">Ordered causal chain</h2><a class="button secondary" href="{{ url_for('download', run_id=manifest.run_id, artifact='candidate_report.json') }}">Download candidate JSON</a></div>
-  {% for row in candidate.rows %}
-  <article class="segment" id="segment-{{ row.segment }}">
-    <header><strong>Segment {{ row.segment }}</strong><span>Order {{ row.causal_order }}</span></header>
-    <h3>{{ row.event }}</h3><p>{{ row.process }}</p>
-    <dl class="categories">
-      <div><dt>Generalized category</dt><dd>{{ row.generalized_category }}</dd></div>
-      <div><dt>Interaction type</dt><dd>{{ row.interaction_type }}</dd></div>
-      <div><dt>Sediment phase</dt><dd>{{ row.sediment_transport_phase }}</dd></div>
-      <div><dt>Predecessors</dt><dd>{{ row.predecessor_segment_ids | join(', ') if row.predecessor_segment_ids else 'None' }}</dd></div>
-    </dl>
-    <details><summary>Evidence and provenance ({{ row.evidence | length }})</summary>
-      {% for evidence in row.evidence %}<blockquote><p>{{ evidence.quote }}</p><footer>{{ evidence.chunk_id }} · {{ evidence.provenance.filename }}{% if evidence.provenance.page %}, page {{ evidence.provenance.page }}{% endif %}{% if evidence.provenance.table %}, table {{ evidence.provenance.table }}, row {{ evidence.provenance.row }}, cell {{ evidence.provenance.cell }}{% endif %}{% if evidence.provenance.paragraph %}, paragraph {{ evidence.provenance.paragraph }}{% endif %}{% if evidence.provenance.parent_chunk_id %}, characters {{ evidence.provenance.char_start }}–{{ evidence.provenance.char_end }}{% endif %} · {{ evidence.provenance.source_type }}</footer></blockquote>{% endfor %}
-    </details>
-    {% if manifest.status in ['awaiting_human_review', 'revision_required'] %}
-    <details><summary>Edit this candidate segment</summary>
-      <form method="post" action="{{ url_for('edit_candidate', run_id=manifest.run_id) }}" class="inline-form candidate-edit" data-row='{{ row | tojson }}' data-labels='{{ controlled_labels | tojson }}'>
-        <input type="hidden" name="segment" value="{{ row.segment }}">
-        <label>Field<select name="field" required>
-          {% for field in ['event', 'process', 'causal_order', 'predecessor_segment_ids', 'generalized_category', 'interaction_type', 'sediment_transport_phase'] %}<option value="{{ field }}">{{ field | replace('_', ' ') }}</option>{% endfor %}
-        </select></label>
-        <label>New value<input name="new_value" value="{{ row.event }}" required><select name="new_value" hidden disabled></select></label>
-        <button type="submit">Apply and re-evaluate</button>
-      </form>
-    </details>
-    {% endif %}
-  </article>
-  {% endfor %}
-</section>
-{% endif %}
-
-{% if human and (human.edits or human.decisions) %}
-<section class="panel"><h2>Human review audit trail</h2>
-  {% if human.edits %}<h3>Edits</h3><ul>{% for edit in human.edits %}<li>Segment {{ edit.segment }}, {{ edit.field }}: <del>{{ edit.old_value }}</del> → <ins>{{ edit.new_value }}</ins> ({{ edit.timestamp }})</li>{% endfor %}</ul>{% endif %}
-  {% if human.decisions %}<h3>Decisions</h3><ul>{% for decision in human.decisions %}<li>{{ decision.decision }}{% if decision.global_comment %}: {{ decision.global_comment }}{% endif %} ({{ decision.timestamp }}){% if decision.segment_comments %}<ul>{% for comment in decision.segment_comments %}<li>{{ comment.issue_type }}{% if comment.segment %}, segment {{ comment.segment }}{% endif %}: {{ comment.comment }}</li>{% endfor %}</ul>{% endif %}</li>{% endfor %}</ul>{% endif %}
-</section>
-{% endif %}
-
-{% if candidate and manifest.status in ['awaiting_human_review', 'revision_required'] %}
-<section class="panel review" aria-labelledby="review-heading"><h2 id="review-heading">Human decision required</h2>
-  {% if manifest.status == 'awaiting_human_review' %}<p>This candidate passed automatic self-evaluation but is not approved yet.</p>
-  {% else %}<p>This candidate must pass re-evaluation before approval.</p>{% endif %}
-  {% set rounds_left = [0, manifest.max_correction_rounds - manifest.correction_rounds] | max %}
-  <p>{{ rounds_left }} automatic correction round(s) remaining.{% if not rounds_left %} You can still edit the candidate and re-evaluate it.{% endif %}</p>
-  <form method="post" action="{{ url_for('decide', run_id=manifest.run_id) }}">
-    <label>Global comment<textarea name="global_comment" rows="3"></textarea></label>
-    <details><summary>Add an issue or request a correction</summary>
-    <fieldset><legend>Optional per-segment issue</legend>
-      <label>Segment ID<input type="number" min="1" name="comment_segment"></label>
-      <label>Issue type<select name="issue_type"><option value="">None</option>{% for item in ['missing', 'duplicate', 'unsupported', 'misordered', 'miscategorized'] %}<option>{{ item }}</option>{% endfor %}</select></label>
-      <label>Comment<input name="segment_comment"></label>
-    </fieldset>
-    <fieldset><legend>Correction routing</legend>
-      <label>Stage<select name="requested_stage"><option value="translation">Translation</option><option value="segmentation">Segmentation</option><option value="categorization">Categorization</option></select></label>
-      <label>Affected segment IDs (comma-separated)<input name="segment_ids" placeholder="1, 3"></label>
-    </fieldset>
-    </details>
-    <div class="actions">
-      {% if manifest.status == 'awaiting_human_review' %}<button name="decision" value="approve" class="approve">Approve report</button>{% endif %}
-      <button name="decision" value="request_correction" {% if not rounds_left %}disabled{% endif %}>Request correction</button>
-      {% if manifest.status == 'awaiting_human_review' %}<button name="decision" value="reject" class="reject">Reject</button>{% endif %}
-    </div>
-  </form>
-</section>
-{% elif manifest.status == 'approved' %}
-<section id="exports" class="panel approved"><h2>Download your results</h2><p>Use CSV for Excel or other spreadsheet tools. Use JSON for further analysis in code.</p><a class="button" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.csv') }}">Download approved CSV</a> <a class="button secondary" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.json') }}">Download approved JSON</a></section>
-{% elif manifest.status == 'rejected' %}<p class="message error">This candidate was rejected. No authoritative export was created.</p>
-{% endif %}
+<noscript><p>Enable JavaScript for live monitoring and citation navigation.</p>{% for row in workspace.results.rows %}<p>Segment {{ row.segment }}: {{ row.event }} — {{ row.process }}</p>{% endfor %}</noscript>
+</div>
+<script id="workspace-data" type="application/json">{{ workspace | tojson }}</script>
 {% endblock %}
-{% block scripts %}{% if manifest.status == 'running' %}<script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endif %}
-<script src="{{ url_for('static', filename='edit.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='edit.js') }}" defer></script><script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}

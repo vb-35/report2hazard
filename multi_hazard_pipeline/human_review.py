@@ -16,6 +16,7 @@ from .pipeline import (
     correct_until_terminal,
     create_human_review,
     save_manifest,
+    invalidate_results,
     utc_now,
 )
 
@@ -91,10 +92,13 @@ def _approve_run_unlocked(
     config: PipelineConfig = DEFAULT_CONFIG,
 ) -> dict[str, Any]:
     run_dir, manifest, human = load_run(artifact_dir)
-    evaluation = read_json(run_dir / "self_evaluation.json")["latest_evaluation"]
+    history = read_json(run_dir / "self_evaluation.json")
+    evaluation = history["latest_evaluation"]
     if manifest["status"] != "awaiting_human_review" or evaluation["status"] != "pass":
         raise PipelineError("only a self-evaluation-passed candidate awaiting human review may be approved")
     candidate = read_json(run_dir / "candidate_report.json")
+    if history.get("candidate_revision", candidate["candidate_revision"]) != candidate["candidate_revision"]:
+        raise PipelineError("approval requires evaluation of the current candidate revision")
     comments = normalize_segment_comments(segment_comments)
     validate_comment_segments(comments, candidate)
     decision = record_decision(human, "approve", global_comment, comments)
@@ -324,6 +328,11 @@ def _apply_candidate_edits_unlocked(
     validate_candidate(candidate, source, config)
     if validate_only:
         return manifest
+    invalidate_results(run_dir, manifest, "segmentation")
+    manifest["current_stage"] = "self_evaluation"
+    manifest["status"] = "running"
+    manifest["stages"]["self_evaluation"] = "running"
+    save_manifest(run_dir, manifest)
     segments["segments"] = sorted(segment_map.values(), key=lambda row: row["causal_order"])
     classified["rows"] = sorted(classified_map.values(), key=lambda row: row["causal_order"])
     human["edits"].extend(audit_entries)
@@ -333,6 +342,9 @@ def _apply_candidate_edits_unlocked(
     write_json(run_dir / "segments.json", segments)
     write_json(run_dir / "classified.json", classified)
     write_json(run_dir / "candidate_report.json", candidate)
+    for name in ("segmentation", "categorization", "candidate_report"):
+        manifest["stages"][name] = "completed"
+    save_manifest(run_dir, manifest)
     try:
         llm_client = client or ChatClient.from_config(config.llm)
         evaluation = review_agent(llm_client, candidate, bilingual_source, config)
@@ -341,6 +353,7 @@ def _apply_candidate_edits_unlocked(
         raise
     history = read_json(run_dir / "self_evaluation.json")
     history["latest_evaluation"] = evaluation
+    history["candidate_revision"] = candidate["candidate_revision"]
     history["status"] = evaluation["status"]
     history["evaluations"].append(
         {"trigger": "human_edit", "evaluation": evaluation, "timestamp": utc_now()}
@@ -351,6 +364,7 @@ def _apply_candidate_edits_unlocked(
     manifest["status"] = human["status"]
     manifest["current_stage"] = "human_review" if evaluation["status"] == "pass" else "self_evaluation"
     manifest["stages"]["self_evaluation"] = "completed"
+    manifest["stages"]["human_review"] = "awaiting" if evaluation["status"] == "pass" else "pending"
     manifest["progress"] = 90 if evaluation["status"] == "pass" else 80
     write_json(run_dir / "human_review.json", human)
     save_manifest(run_dir, manifest)

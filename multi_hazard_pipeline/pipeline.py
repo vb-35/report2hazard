@@ -126,6 +126,37 @@ def save_manifest(artifact_dir: Path, manifest: dict[str, Any]) -> None:
     write_json(artifact_dir / "manifest.json", {key: value for key, value in manifest.items() if not key.startswith("_")})
 
 
+WORKSPACE_ARTIFACTS = {
+    "extraction": "source.json", "translation": "translated.json",
+    "segmentation": "segments.json", "categorization": "classified.json",
+    "candidate_report": "candidate_report.json", "self_evaluation": "self_evaluation.json",
+}
+
+
+def artifact_token(path: Path) -> str | None:
+    try:
+        stat = path.stat()
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except FileNotFoundError:
+        return None
+
+
+def invalidate_results(artifact_dir: Path, manifest: dict[str, Any], stage: str) -> None:
+    """Record retained artifact identities before replacing a pipeline suffix."""
+    stages = list(WORKSPACE_ARTIFACTS)
+    if stage not in stages:
+        return
+    invalid = manifest.setdefault("retained_artifacts", {})
+    for name in stages[stages.index(stage):]:
+        filename = WORKSPACE_ARTIFACTS[name]
+        token = artifact_token(artifact_dir / filename)
+        if token:
+            invalid[filename] = token
+        manifest["stages"][name] = "pending"
+    manifest["stages"]["human_review"] = "pending"
+    manifest["stages"]["final_export"] = "pending"
+
+
 def finish_stage_timing(artifact_dir: Path, manifest: dict[str, Any], outcome: str) -> None:
     timer = manifest.pop("_stage_timer", None)
     if timer:
@@ -144,6 +175,13 @@ def set_stage(
     progress: int | None = None,
 ) -> None:
     previous_stage = manifest.get("current_stage")
+    # A replaced artifact marks the previous running stage as complete.
+    if previous_stage in WORKSPACE_ARTIFACTS and manifest["stages"].get(previous_stage) == "running":
+        filename = WORKSPACE_ARTIFACTS[previous_stage]
+        token = artifact_token(artifact_dir / filename)
+        if token and token != manifest.get("retained_artifacts", {}).get(filename):
+            manifest["stages"][previous_stage] = "completed"
+    invalidate_results(artifact_dir, manifest, stage)
     finish_stage_timing(artifact_dir, manifest,
                         "skipped" if manifest["stages"].get(previous_stage) == "skipped" else "completed")
     manifest["_stage_timer"] = (stage, perf_counter())
@@ -340,6 +378,7 @@ def correct_until_terminal(
             manifest["run_id"], classified, source, candidate["candidate_revision"] + 1
         )
         write_json(artifact_dir / "candidate_report.json", candidate)
+        manifest["stages"]["candidate_report"] = "completed"
         set_stage(artifact_dir, manifest, "self_evaluation", progress=75)
         evaluation = review_agent(client, candidate, bilingual_source, config)
         manifest["correction_rounds"] += 1
@@ -358,6 +397,7 @@ def correct_until_terminal(
             {"round": manifest["correction_rounds"], "evaluation": evaluation, "timestamp": utc_now()}
         )
         history["latest_evaluation"] = evaluation
+        history["candidate_revision"] = candidate["candidate_revision"]
         history["status"] = evaluation["status"]
         for rerun_stage in stages_rerun:
             if rerun_stage != "translation":
@@ -438,6 +478,7 @@ def execute_run(
         set_stage(run_dir, manifest, active_stage, progress=75)
         evaluation = review_agent(llm_client, candidate, translated, config)
         history = initial_evaluation_history(evaluation)
+        history["candidate_revision"] = candidate["candidate_revision"]
         write_json(run_dir / "self_evaluation.json", history)
         segments, classified, candidate, history = correct_until_terminal(
             client=llm_client,
