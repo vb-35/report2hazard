@@ -25,11 +25,14 @@ def main():
             assert all(j["reasoning_effort"] == "medium" for j in plan["jobs"][6:])
             from dataclasses import replace
             import json
-            normal = b.ChatClient("offline", b.DEFAULT_CONFIG.llm)
-            medium = b.ChatClient("offline", replace(b.DEFAULT_CONFIG.llm, reasoning_effort="medium"))
+            normal = b.ChatClient("offline", replace(b.DEFAULT_CONFIG.llm, reasoning_effort=None))
+            medium = b.ChatClient("offline", b.DEFAULT_CONFIG.llm)
             args = dict(system_prompt="test", user_payload={}, response_schema=None)
             assert "reasoning_effort" not in json.loads(normal._request_body(**args))
-            assert json.loads(medium._request_body(**args))["reasoning_effort"] == "medium"
+            default_payload = json.loads(medium._request_body(**args))
+            assert default_payload["model"] == "Inferact/Qwen3.8-27B-NVFP4"
+            assert default_payload["reasoning_effort"] == "medium"
+            assert medium.config.timeout_seconds == 660
             from io import BytesIO
             from unittest import TestCase
             with (patch.object(b, "available_models", return_value={"data": [{"id": m} for m in b.MODELS]}),

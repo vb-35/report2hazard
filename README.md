@@ -29,6 +29,8 @@ python -m venv .venv
 
 Double-click **Start Interface.cmd** in the project folder. It opens the app in your browser using a free local port. If asked, paste your LLM API key (the input is hidden); it is used only for this session. Press Enter without a key to browse existing results. Keep the launcher window open while using the app.
 
+New runs default to `Inferact/Qwen3.8-27B-NVFP4` with `medium` reasoning and a 660-second request timeout, matching the recent Qwen benchmarks. These defaults also apply to the command line. Restart an already-running interface to load them.
+
 1. Choose a PDF, DOCX, or TXT report and click **Extract report**.
 2. Wait for processing, then check the events and expand their source evidence.
 3. Click **Approve report**, then **Download approved CSV** to use the results in Excel.
