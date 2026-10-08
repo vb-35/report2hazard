@@ -221,6 +221,8 @@ class ChatClient:
         }
         if response_schema:
             payload["response_format"] = {"type": "json_schema", "json_schema": response_schema}
+        if self.config.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.config.reasoning_effort
         body = compact_json(payload)
         if len(body) > self.config.max_request_chars:
             raise _RequestError(

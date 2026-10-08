@@ -95,6 +95,7 @@ class LLMConfig:
     model: str = "google/gemma-4-31B-it"
     retries: int = 3
     temperature: float = 0.0
+    reasoning_effort: str | None = None
     timeout_seconds: int = 400
     max_request_chars: int = 200000
 

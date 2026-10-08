@@ -64,6 +64,25 @@ python -m multi_hazard_pipeline correct RUN_ARTIFACT_DIR --stage translation --c
 
 Exit codes are 0 approved, 1 failed, 2 invalid command usage, 3 awaiting human review, 4 revision required, and 5 rejected.
 
+## Repeated model comparison
+
+`benchmark_models.py` runs the real pipeline across explicitly selected reports and independent repetitions. It leaves the application's default model unchanged. List currently available IDs with `python benchmark_models.py models`. Prepare a JSON specification with `models` (explicit API IDs), `repeats` (at least 2), and `reports` (at least 2 objects containing a unique `id` and an `inputs` list of companion file paths). Optional `timeout_seconds` defaults to 660 to allow the router's 600-second backend deadline to return. Optional `model_reasoning_effort` maps explicit model IDs to their requested effort, for example `{"Inferact/Qwen3.8-27B-NVFP4": "medium"}`. The effort is recorded per run; models absent from that mapping retain their defaults. Reasoning benchmarks check the router's OpenAPI schema before launch to prevent silently ignored settings; `router_openapi_url` can point to that schema through an SSH tunnel when it is not publicly exposed. Other pipeline settings, prompts, batching, temperature, three-attempt call budget, and two-round correction budget are identical between models.
+
+```powershell
+python benchmark_models.py prepare results/run_support/model_benchmark_spec.json results/run_support/model_benchmark
+python benchmark_models.py run results/run_support/model_benchmark
+python benchmark_models.py summarize results/run_support/model_benchmark
+python test_benchmark_models.py
+```
+
+The prepared plan hashes inputs, code, schemas, and glossary and records settings and dependency versions. All reports and repetitions run with the first model before switching to the next model, minimizing loading overhead. This fixed order can confound timings with changes in server load; repeat a later benchmark in reversed model order if that matters. A small availability warmup before each model switch records loading time and calls separately. Warmup time is excluded from report timings; the first full report can still incur prompt/schema cache warmup. The benchmark runs one report at a time; use an otherwise idle API for a controlled timing comparison. The suite directory must be new. Completed jobs can be skipped on rerun; an interrupted running job stops for inspection instead of overwriting artifacts.
+
+`comparison.md`, `summary.json`, and `runs.csv` update after each run. They include wall time and its variation, stages, reviewer readiness, candidate availability, first-attempt call pass rate, extra attempts, request/parsing/validation failures, retry wait, semantic correction rounds, and actual token usage with reporting coverage. Failure-adjusted time includes the time spent on failed runs. Unknown-label fraction and segment count are diagnostics, not quality scores. An exact-source quote and chain/label validation checks structure; they do not establish that a statement or causal link is justified.
+
+For semantic quality, score the anonymized `review/C*.json` packets against their complete original source before opening `model_key.json` or the model timing table. Fill `ratings.csv` with 0–4 ratings for factual support (claims match source and uncertainty), taxonomy (T1–T5 labels), completeness (important source-supported steps captured without duplicates), causality (only justified direct links), and translation (preserved meaning, terminology, numbers and uncertainty). Score each dimension: 4 = no material error, 3 = minor errors, 2 = one material error or several minor errors, 1 = multiple material errors, 0 = unusable. Check the *whole* source to assess omissions. Record erroneous labels, unsupported links, and missing steps in `notes`; refer to segment IDs and source quotes. For translation skipped by the language gate, assess whether original-language interpretation is preserved. Missing candidates receive 0 for all dimensions with the failure recorded. Unfilled ratings remain pending rather than becoming zero. Re-run `summarize` after scoring for totals out of 20. For stronger ground truth, adjudicate reference steps, labels and links from the sources before reading any candidates; repeat scoring with a second reviewer on a subset.
+
+Compare both models within each report before pooling. Prefer the model with fewer source-grounded material errors and missing steps, then compare its first-attempt reliability and failure-adjusted time. Reviewer pass rate alone does not determine the winner. Three repetitions on four reports are a pilot from one report collection, not a statistically conclusive comparison across languages or report domains. Extend the specification with independent reports and more repetitions if the results are close.
+
 ## Local web review
 
 ```powershell
