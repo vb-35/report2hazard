@@ -87,6 +87,8 @@ For semantic quality, score the anonymized `review/C*.json` packets against thei
 
 Compare both models within each report before pooling. Prefer the model with fewer source-grounded material errors and missing steps, then compare its first-attempt reliability and failure-adjusted time. Reviewer pass rate alone does not determine the winner. Three repetitions on four reports are a pilot from one report collection, not a statistically conclusive comparison across languages or report domains. Extend the specification with independent reports and more repetitions if the results are close.
 
+Segmentation summarizes major stages of the main event, using roughly 8?12 rows as guidance for a moderately complex event rather than a fixed count. Repeated observations, quantities, locations, and damage examples are grouped with their evidence. Historical events and unrelated context are excluded. For multi-batch consolidation, `segments.json` includes `consolidation_audit` with input observations, output mappings, and explicit exclusion reasons; every input observation must be accounted for exactly once. Classification still uses the existing taxonomy rules.
+
 ## Local web review
 
 ```powershell

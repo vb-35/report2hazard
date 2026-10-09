@@ -122,8 +122,15 @@ def consolidation_response_schema() -> dict[str, Any]:
             "properties": {"segments": json_array_schema({
                 "type": "object", "additionalProperties": False,
                 "properties": fields, "required": list(fields),
+            }), "excluded_observations": json_array_schema({
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "source_segment_id": {"type": "integer", "minimum": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+                "required": ["source_segment_id", "reason"],
             })},
-            "required": ["segments"],
+            "required": ["segments", "excluded_observations"],
         },
     }
 
