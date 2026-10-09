@@ -18,8 +18,28 @@ from ..schemas import (
 )
 
 
+EVENT_STAGE_RULES = """
+Produce a concise causal account of the main hazard event. A segment represents a major physical process or functional
+stage at the level an expert would use in an event-summary table, not an individual observation.
+Include event-specific preconditions, triggers, material mobilization, movement, deposition, channel changes,
+infrastructure impacts, and post-event redistribution when supported. Exclude historical events, general background,
+emergency notifications, evacuation accounts, and unrelated neighboring events. Include background only when the
+source explicitly connects it to the main event's development. Preserve relevant independent branches.
+Merge observations describing the same process and causal role across the report, including summaries and captions.
+Keep measurements, named locations, and individual damaged objects within the relevant stage with supporting citations;
+they do not independently justify more segments. Separate stages when merging would hide a meaningful difference in
+mechanism, causal role, or outcome: for example erosion versus deposition, or a small precursor flow versus the main flow.
+Multiple discharge waves may share a stage unless different causes or consequences matter to understanding the event.
+For a single event of moderate complexity, approximately 8-12 segments is guidance for the complete report, not a quota
+for each batch or a hard limit. Do not invent stages or merge distinct mechanisms to reach a target count.
+Order by supported chronology and causal relationships, not first appearance in the report. Do not invent causal links.
+Before returning, remove repeated stages and check that every segment adds a distinct part of the event's explanation.
+""".strip()
+
+
 SEGMENTATION_PROMPT = """
-Define a coherent ordered set of causal-process steps for the complete qualitative hazard report, allowing independent branches. Return JSON only as
+Extract evidence for major stages of the main hazard event from the supplied source, allowing relevant independent branches.
+Final grouping occurs across the whole document; within this batch, merge repeated observations of the same stage. Return JSON only as
 {"segments":[{"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"...","process":"...","evidence":[{"chunk_id":"...","quote":"..."}]}]}.
 
 Rules:
@@ -60,14 +80,18 @@ Steps in list order (each with a quote of its corresponding input sentence):
 1 road damage, predecessors=[]; 2 tributary sediment mobilization, predecessors=[];
 3 tributary basin filling, predecessors=[2]; 4 coastal bank erosion, predecessors=[].
 "Later" establishes timing, not a 1->2 cause. Only the explicit "That mobilized sediment" supports 2->3.
-""".strip()
+This example illustrates link validity only; unrelated events are excluded from a main-event summary.
+""".strip() + "\n\n" + EVENT_STAGE_RULES
 
 
 CONSOLIDATION_PROMPT = """
-Consolidate the supplied batch-level causal steps into one coherent report-level chain. Return JSON only with segments.
+Consolidate the supplied batch-level causal steps into one coherent report-level chain. Return JSON only with segments and excluded_observations.
 For each output segment, provide segment, causal_order, predecessor_segment_ids, event, process, and source_segment_ids.
-Use contiguous segment and causal_order values beginning at 1. Each source_segment_id must appear exactly once across
-the entire output; combine IDs only when they describe the same causal step. Preserve every distinct causal step,
+Use contiguous segment and causal_order values beginning at 1. Account for every input source segment exactly once:
+assign its ID to one output segment's source_segment_ids, or to excluded_observations as
+{"source_segment_id":1,"reason":"Specific reason this observation is outside the main event summary"}.
+Return excluded_observations=[] when nothing is excluded. Merge repeated observations of the same major stage;
+do not exclude useful evidence merely to reach a target count. Preserve distinct major stages,
 order evidenced causes before effects, and use only earlier output segment numbers as predecessors when the supplied
 evidence supports a direct causal link. Chronology, adjacency, or shared location alone does not establish causation;
 preserve uncertainty, independent branches, and empty predecessor lists, including for later steps. Write event and process in English.
@@ -76,7 +100,7 @@ Do not invent facts or source IDs.
 When review_issues and previous_answer are supplied, preserve all feedback while reassessing the complete chain's
 consequences and predecessor links. Current batch_segments are the source steps to consolidate; their IDs may differ
 from previous_answer. Categorization feedback informs causal meaning; Python reassesses labels afterward.
-""".strip()
+""".strip() + "\n\n" + EVENT_STAGE_RULES
 
 
 CITATION_VERIFICATION_PROMPT = """
@@ -205,6 +229,19 @@ def _restore_consolidated_evidence(
                 if citation not in citations:
                     citations.append(deepcopy(citation))
         result.append({key: row[key] for key in ("segment", "causal_order", "predecessor_segment_ids", "event", "process")} | {"evidence": citations})
+    excluded = payload.get("excluded_observations")
+    if not isinstance(excluded, list):
+        raise ValueError("consolidation needs an excluded_observations list")
+    for observation in excluded:
+        if not isinstance(observation, dict):
+            raise ValueError("excluded observation must be an object")
+        source_id = observation.get("source_segment_id")
+        if type(source_id) is not int or source_id not in by_id:
+            raise ValueError(f"exclusion cites unknown source segment {source_id}")
+        reason = observation.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("excluded observation needs a nonempty reason")
+        used.append(source_id)
     missing = set(by_id) - set(used)
     if missing:
         detail = "; ".join(f"{source_id}: {by_id[source_id]['evidence'][0]['quote']!r}" for source_id in sorted(missing))
@@ -412,6 +449,7 @@ def segment_agent(
     validate_segment_chain({"segments": preliminary}, source)
 
     segments = preliminary
+    audit: dict[str, Any] = {}
     if len(batches) > 1:
         def validate_consolidated(payload: Any) -> None:
             _restore_consolidated_evidence(payload, preliminary, source)
@@ -427,9 +465,10 @@ def segment_agent(
             validate=validate_consolidated,
             response_schema=consolidation_response_schema(),
         )
+        audit = {"consolidation_audit": {"input_segments": preliminary, **deepcopy(consolidated)}}
         segments = consolidate_exact_duplicates(_restore_consolidated_evidence(consolidated, preliminary, source))
         validate_segment_chain({"segments": segments}, source)
 
     if not segments:
         raise PipelineError("segment agent produced no causal-process segments")
-    return {"doc_id": source["doc_id"], "status": "pass", "segments": segments}
+    return {"doc_id": source["doc_id"], "status": "pass", "segments": segments, **audit}

@@ -22,7 +22,7 @@ from multi_hazard_pipeline import human_review, language, pipeline, splitter, we
 from multi_hazard_pipeline.agents.classification_agent import _classification_prompt, classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES, review_agent
 from multi_hazard_pipeline.agents.segment_agent import (
-    CONSOLIDATION_PROMPT, SEGMENTATION_PROMPT, batch_chunks, segment_agent, _verify_nonliteral_citation,
+    CONSOLIDATION_PROMPT, SEGMENTATION_PROMPT, batch_chunks, segment_agent, _verify_nonliteral_citation, _restore_consolidated_evidence,
 )
 from multi_hazard_pipeline.agents.source_agent import source_agent, split_source_chunks
 from multi_hazard_pipeline.agents.translation_agent import translation_agent
@@ -84,7 +84,7 @@ class SmokeClient:
                 {key: item[key] for key in ("segment", "causal_order", "predecessor_segment_ids", "event", "process")}
                 | {"source_segment_ids": [item["segment"]]}
                 for item in data["batch_segments"]
-            ]}
+            ], "excluded_observations": []}
         elif name == "whole_report_evaluation":
             assert len(data["candidate_report"]["rows"]) == len(data["source_chunks"])
             chunks = {chunk["chunk_id"]: chunk for chunk in data["source_chunks"]}
@@ -533,7 +533,31 @@ def check_instruction_contracts(root, inputs):
     assert len(rounds) == 1 and rounds[0]["stages_rerun"] == ["categorization"] and client.review_count == 2
 
 
+def check_consolidation_exclusions():
+    source = {"chunks": [{"chunk_id": "c1", "text": "Rain fell. Heavy rain triggered flow. Historical flood."}]}
+    preliminary = [
+        {"segment": i, "causal_order": i, "predecessor_segment_ids": [], "event": "Storm",
+         "process": quote, "evidence": [{"chunk_id": "c1", "quote": quote}]}
+        for i, quote in enumerate(["Rain fell.", "Heavy rain triggered flow.", "Historical flood."], 1)
+    ]
+    payload = {"segments": [{"segment": 1, "causal_order": 1, "predecessor_segment_ids": [],
+                            "event": "Storm", "process": "Heavy rainfall", "source_segment_ids": [1, 2]}],
+               "excluded_observations": [{"source_segment_id": 3, "reason": "Historical event"}]}
+    result = _restore_consolidated_evidence(payload, preliminary, source)
+    assert result[0]["evidence"] == preliminary[0]["evidence"] + preliminary[1]["evidence"]
+    assert len(result) == 1
+    for exclusions in (None, [], [{"source_segment_id": 3, "reason": " "}],
+                       [{"source_segment_id": 99, "reason": "Unknown"}],
+                       payload["excluded_observations"] * 2,
+                       payload["excluded_observations"] + [{"source_segment_id": 1, "reason": "Already retained"}]):
+        invalid = deepcopy(payload)
+        invalid["excluded_observations"] = exclusions
+        with TestCase().assertRaises(ValueError):
+            _restore_consolidated_evidence(invalid, preliminary, source)
+
+
 def main():
+    check_consolidation_exclusions()
     with (
         TemporaryDirectory(prefix="hazard-smoke-") as directory,
         patch.object(urllib.request.OpenerDirector, "open", blocked_network),

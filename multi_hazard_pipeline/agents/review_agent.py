@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .segment_agent import EVENT_STAGE_RULES
 from ..config import TAXONOMY_DECISION_RULES, PipelineConfig
 from ..core import normalize_text
 from ..language import language_prompt_context
@@ -153,8 +154,12 @@ Assess semantic facts that deterministic code cannot decide reliably:
 - Are every segment's event and process written in English?
 - Is each predecessor link supported by source evidence of a direct causal relationship? Chronological order,
   adjacent descriptions, and shared locations alone do not prove causation. Independent branches and empty predecessors are valid.
-- Are important causal-process steps missing?
-- Are steps duplicated or unnecessarily fragmented rather than representing distinct causal roles?
+- Are important major stages of the main event missing? Completeness does not require every observation or background fact.
+- Would an expert merge rows because they describe the same major stage? Flag the affected IDs with a targeted merge instruction
+  and fail segments_unique. Repeated measurements, locations, damaged objects, summaries, and captions do not justify separate rows.
+- Are historical events, unrelated background, or emergency/evacuation accounts included without a relevant physical process?
+  Flag these as segmentation scope issues. Do not restore intentionally excluded context merely for completeness.
+- Do not fail a report solely because its segment count falls outside the suggested range.
 - Is every claim supported by its evidence in meaning (citation IDs and quote occurrence are already code-checked)?
 - Is every segment categorized exactly once, and do taxonomy precedence/disambiguation rules fit its role in sediment connectivity?
 - Is the complete report internally consistent?
@@ -170,7 +175,7 @@ message must identify the segment, field/current label, source chunk ID and shor
 of what the current label violates. If the problem is absence of evidence for a direction, say what the source establishes
 and what is missing. Suggest a replacement only when supported; otherwise request evidence-based reassessment using T1/T2.
 Do not flag a supported uncertainty label merely for being nonspecific. Keep summary/messages concise; omit deliberation.
-""".strip() + "\n\n" + TAXONOMY_DECISION_RULES
+""".strip() + "\n\n" + EVENT_STAGE_RULES + "\n\n" + TAXONOMY_DECISION_RULES
     projected, references = source_payload(source.get("chunks", []), language_prompt_context(source))
 
     def validate(payload: Any) -> None:
