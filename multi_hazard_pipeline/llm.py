@@ -4,11 +4,13 @@ import json
 import math
 import re
 import ssl
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from http.client import IncompleteRead
 from pathlib import Path
+from threading import Thread
 from time import perf_counter, sleep
 from typing import Any
 from urllib import error, request
@@ -121,10 +123,16 @@ class ChatClient:
         user_payload: Any,
         validate: Any,
         response_schema: dict[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        total_timeout_seconds: float | None = None,
     ) -> Any:
         last_error: Exception | None = None
         if self.config.retries < 1:
             raise PipelineError("chat request configuration requires at least one attempt")
+        for limit in (timeout_seconds, total_timeout_seconds):
+            if limit is not None and (not math.isfinite(limit) or limit <= 0):
+                raise PipelineError("chat time limits must be finite and positive")
+        deadline = perf_counter() + total_timeout_seconds if total_timeout_seconds is not None else None
         repair = None
         task = response_schema["name"] if response_schema else "unstructured_json"
         input_chars = len(compact_json(user_payload))
@@ -135,6 +143,11 @@ class ChatClient:
         chunk_sizes = [len(chunk.get("text", "")) for chunk in chunks]
         for attempt in range(1, self.config.retries + 1):
             started = perf_counter()
+            request_timeout = self.config.timeout_seconds
+            if timeout_seconds is not None:
+                request_timeout = min(request_timeout, timeout_seconds)
+            if deadline is not None:
+                request_timeout = min(request_timeout, deadline - started)
             prompt_chars = len(system_prompt)
             network_seconds = 0.0
             response_chars = 0
@@ -146,11 +159,15 @@ class ChatClient:
             retry_delay = 0.0
             network_started = perf_counter()
             try:
-                payload = self._post(
+                if deadline is not None and request_timeout <= 0:
+                    raise _RequestError(f"{task} exceeded its {total_timeout_seconds:g}-second total time limit")
+                post = self._post_with_timeout if timeout_seconds is not None or deadline is not None else self._post
+                payload = post(
                     system_prompt=system_prompt,
                     user_payload=user_payload,
                     response_schema=response_schema,
                     repair=repair,
+                    timeout_seconds=request_timeout,
                 )
                 network_seconds = perf_counter() - network_started
                 response_chars = len(json.dumps(payload, ensure_ascii=False))
@@ -161,6 +178,8 @@ class ChatClient:
                 parsed = extract_response_json(payload)
                 outcome = "validation_error"
                 validate(parsed)
+                if deadline is not None and perf_counter() >= deadline:
+                    raise _RequestError(f"{task} exceeded its {total_timeout_seconds:g}-second total time limit")
             except Exception as exc:
                 network_seconds = network_seconds or perf_counter() - network_started
                 last_error = exc
@@ -183,12 +202,22 @@ class ChatClient:
                     repair = {"answer": failed_answer, "error": f"{type(exc).__name__}: {exc}", "kind": outcome}
             else:
                 outcome = "pass"
+            if failure is not None and retryable and deadline is not None:
+                remaining = deadline - perf_counter()
+                if remaining <= retry_delay:
+                    last_error = failure = _RequestError(
+                        f"{task} exhausted its {total_timeout_seconds:g}-second total time budget "
+                        f"(including retry delays): {failure}"
+                    )
+                    outcome = "request_error"
+                    retryable = False
             if self.timing_path is not None:
                 append_timing(self.timing_path, {
                     "type": "llm_call", "task": task, "attempt": attempt, "outcome": outcome,
                     "elapsed_seconds": round(perf_counter() - started, 3),
                     "network_seconds": round(network_seconds, 3),
-                    "timeout_seconds": self.config.timeout_seconds,
+                    "timeout_seconds": max(0.0, request_timeout),
+                    "total_timeout_seconds": total_timeout_seconds,
                     "prompt_chars": prompt_chars, "input_chars": input_chars,
                     "response_chars": response_chars, "chunk_count": len(chunks),
                     "chunk_text_chars": sum(chunk_sizes), "max_chunk_text_chars": max(chunk_sizes, default=0),
@@ -206,6 +235,24 @@ class ChatClient:
                 sleep(retry_delay)
         exception_type = _RequestError if outcome == "request_error" else PipelineError
         raise exception_type(f"model {outcome} failed after {attempt} attempt(s): {last_error}") from last_error
+
+    def _post_with_timeout(self, *, timeout_seconds: float, **kwargs: Any) -> dict[str, Any]:
+        # A socket timeout alone does not bound DNS, connection setup and a slowly arriving body together.
+        result: Future = Future()
+
+        def send() -> None:
+            try:
+                result.set_result(self._post(timeout_seconds=timeout_seconds, **kwargs))
+            except Exception as exc:
+                result.set_exception(exc)
+
+        # shortcut: timed-out requests can finish in the background; use cancellable transport if they accumulate.
+        Thread(target=send, daemon=True).start()
+        try:
+            return result.result(timeout=timeout_seconds)
+        except FutureTimeoutError as exc:
+            raise _RequestError(f"chat completion exceeded its {timeout_seconds:g}-second attempt time limit",
+                                retryable=True) from exc
 
     def _request_body(
         self, *, system_prompt: str, user_payload: Any, response_schema: dict[str, Any] | None,
@@ -262,6 +309,7 @@ class ChatClient:
     def _post(
         self, *, system_prompt: str, user_payload: Any, response_schema: dict[str, Any] | None,
         repair: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self.config.api_base_url.rstrip('/')}{self.config.text_endpoint}"
         try:
@@ -287,7 +335,7 @@ class ChatClient:
             },
         )
         try:
-            with request.urlopen(req, timeout=self.config.timeout_seconds) as response:
+            with request.urlopen(req, timeout=self.config.timeout_seconds if timeout_seconds is None else timeout_seconds) as response:
                 return json.loads(response.read().decode("utf-8"))
         except error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")

@@ -266,6 +266,8 @@ def _verify_nonliteral_citation(
         },
         validate=validate,
         response_schema=citation_verification_response_schema(),
+        timeout_seconds=45,
+        total_timeout_seconds=90,
     )
     if not response["supported"]:
         raise ValueError(f"segment {mismatch.segment} citation is not supported by the cited or adjacent source pages")

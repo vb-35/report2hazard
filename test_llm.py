@@ -11,6 +11,8 @@ from http.client import IncompleteRead
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
+from time import perf_counter
 from unittest import TestCase
 from unittest.mock import patch
 from urllib import error, request
@@ -143,6 +145,112 @@ def check_request_failures(root):
                 model.complete_json(**TASK, validate=validate)
             assert endpoint.call_count == limit and sleep.call_count == limit - 1
         assert len(timings(model)) == limit
+
+
+def check_citation_time_limits(root):
+    bounded = {**TASK, "response_schema": {**TASK["response_schema"], "name": "citation_semantic_verification"},
+               "timeout_seconds": 45, "total_timeout_seconds": 90}
+    clock = [0.0]
+
+    def advance(seconds):
+        clock[0] += seconds
+
+    def stalled(req, *, timeout):
+        advance(timeout)
+        raise TimeoutError("offline stalled request")
+
+    model = client(root, "citation-budget")
+    with (patch.object(llm, "perf_counter", side_effect=lambda: clock[0]),
+          patch.object(llm, "sleep", side_effect=advance) as sleep,
+          patch.object(request, "urlopen", side_effect=stalled) as endpoint):
+        with TestCase().assertRaisesRegex(PipelineError, "citation_semantic_verification.*90-second total time budget"):
+            model.complete_json(**bounded, validate=validate)
+        assert [call.kwargs["timeout"] for call in endpoint.call_args_list] == [45, 44]
+        sleep.assert_called_once_with(1)
+        assert clock[0] == 90
+    assert [row["timeout_seconds"] for row in timings(model)] == [45, 44]
+    assert all(row["total_timeout_seconds"] == 90 for row in timings(model))
+    assert timings(model)[-1]["retry_delay_seconds"] is None
+
+    # A citation deadline must not turn into a parent segmentation repair/retry.
+    clock[0] = 0
+    model = client(root, "citation-nested-budget")
+
+    def nested_endpoint(req, *, timeout):
+        if json.loads(req.data)["response_format"]["json_schema"]["name"] == "offline_answer":
+            assert timeout == 660
+            return Response(completion('{"ok":true}'))
+        return stalled(req, timeout=timeout)
+
+    with (patch.object(llm, "perf_counter", side_effect=lambda: clock[0]),
+          patch.object(llm, "sleep", side_effect=advance),
+          patch.object(request, "urlopen", side_effect=nested_endpoint) as endpoint):
+        with TestCase().assertRaisesRegex(PipelineError, "request_error.*90-second total time budget"):
+            model.complete_json(**TASK, validate=lambda answer: model.complete_json(**bounded, validate=validate))
+        assert endpoint.call_count == 3 and clock[0] == 90
+    assert timings(model)[-1]["task"] == "offline_answer" and timings(model)[-1]["attempt"] == 1
+
+    model = client(root, "citation-long-backoff")
+    with (patch.object(request, "urlopen", side_effect=http_failure(429, {"Retry-After": "120"})) as endpoint,
+          patch.object(llm, "sleep") as sleep):
+        with TestCase().assertRaisesRegex(PipelineError, "total time budget"):
+            model.complete_json(**bounded, validate=validate)
+        assert endpoint.call_count == 1 and not sleep.called
+
+    # Output repairs consume the same budget; a success inside the budget is still accepted.
+    for succeeds in (False, True):
+        clock[0] = 0
+        model = client(root, f"citation-repair-budget-{succeeds}")
+
+        def repair_endpoint(req, *, timeout):
+            advance(5 if succeeds and clock[0] else timeout)
+            return Response(completion('{"ok":true}' if succeeds and clock[0] > 45 else '{"ok":false}'))
+
+        with (patch.object(llm, "perf_counter", side_effect=lambda: clock[0]),
+              patch.object(request, "urlopen", side_effect=repair_endpoint) as endpoint):
+            if succeeds:
+                assert model.complete_json(**bounded, validate=validate) == {"ok": True}
+                assert clock[0] == 50
+            else:
+                with TestCase().assertRaisesRegex(PipelineError, "total time budget"):
+                    model.complete_json(**bounded, validate=validate)
+                assert clock[0] == 90
+            assert endpoint.call_count == 2
+
+    model = client(root, "citation-lower-timeout", timeout_seconds=20)
+    with patch.object(request, "urlopen", return_value=Response(completion('{"ok":true}'))) as endpoint:
+        assert model.complete_json(**bounded, validate=validate) == {"ok": True}
+        assert endpoint.call_args.kwargs["timeout"] == 20
+
+    for key in ("timeout_seconds", "total_timeout_seconds"):
+        for invalid in (0, -1, float("inf"), float("nan")):
+            with patch.object(request, "urlopen", blocked_network):
+                with TestCase().assertRaisesRegex(PipelineError, "finite and positive"):
+                    model.complete_json(**{**bounded, key: invalid}, validate=validate)
+
+    # Bound real wall time even if the response body ignores the socket timeout.
+    release, finished = Event(), Event()
+
+    class SlowResponse(Response):
+        def read(self):
+            try:
+                release.wait(5)
+                return self.body
+            finally:
+                finished.set()
+
+    model = client(root, "citation-wall-time", retries=1)
+    started = perf_counter()
+    with patch.object(request, "urlopen", return_value=SlowResponse(completion('{"ok":true}'))):
+        try:
+            with TestCase().assertRaisesRegex(PipelineError, "time budget"):
+                model.complete_json(**{**bounded, "timeout_seconds": .05, "total_timeout_seconds": .05},
+                                    validate=validate)
+            assert perf_counter() - started < 1 and not finished.is_set()
+            assert timings(model)[0]["outcome"] == "request_error"
+        finally:
+            release.set()
+            assert finished.wait(1)
 
 
 def check_repairs(root):
@@ -347,6 +455,7 @@ def main():
           patch.object(socket.socket, "connect_ex", blocked_network)):
         root = Path(directory)
         check_request_failures(root)
+        check_citation_time_limits(root)
         check_repairs(root)
         check_classification_repairs(root)
         check_parsing_and_partial_output(root)

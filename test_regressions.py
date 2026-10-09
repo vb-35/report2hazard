@@ -212,6 +212,7 @@ def check_model_payloads(root):
 
     class FragmentClient:
         def complete_json(self, **kwargs):
+            assert kwargs["timeout_seconds"] == 45 and kwargs["total_timeout_seconds"] == 90
             fragments = kwargs["user_payload"]["fragments"]
             assert len(fragments) == 1  # Adjacent text from a different document cannot repair this citation.
             assert fragments[0]["text"] == chunks[0]["text"] and fragments[0]["page"] == 1
