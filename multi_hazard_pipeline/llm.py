@@ -21,6 +21,9 @@ from .errors import PipelineError
 from .payloads import compact_json, model_payload
 
 
+JSON_ESCAPING_RULE = r'''Inside JSON strings, escape double quotes as \", backslashes as \\, and line breaks as \n. Never emit literal control characters. Use plain punctuation in generated descriptions where possible; preserve required labels and evidence content.'''
+
+
 def append_timing(path: Path, record: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({"timestamp": datetime.now(UTC).isoformat(), **record}, ensure_ascii=False) + "\n")
@@ -263,7 +266,7 @@ class ChatClient:
             "model": self.config.model,
             "temperature": self.config.temperature,
             "messages": [
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": system_prompt + "\n\n" + JSON_ESCAPING_RULE},
                 {"role": "user", "content": compact_json(model_payload(user_payload))},
             ],
         }
