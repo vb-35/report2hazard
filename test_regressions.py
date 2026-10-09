@@ -32,6 +32,7 @@ from multi_hazard_pipeline.errors import PipelineError
 from multi_hazard_pipeline.llm import ChatClient
 from multi_hazard_pipeline.payloads import compact_json, resolve_chunk_ids, source_payload
 from multi_hazard_pipeline.schemas import CitationQuoteMismatch, validate_segment_chain
+from multi_hazard_pipeline.workspace import timing_statistics
 
 
 class SmokeClient:
@@ -426,6 +427,34 @@ def check_long_paths(root):
         shutil.rmtree(resolve_path(base), ignore_errors=False)
 
 
+def check_timing_statistics(root):
+    run_dir = root / "timing-stats"
+    run_dir.mkdir()
+    call = {"type": "llm_call", "task": "translated_chunks", "elapsed_seconds": 2.0}
+    records = [
+        # Legacy logs have no start records: calls belong to the next stage end.
+        {**call, "attempt": 1, "outcome": "request_error", "error": "chat completion HTTP 504: Gateway Time-out",
+         "retry_delay_seconds": 1},
+        {**call, "attempt": 2, "outcome": "pass"},
+        {"type": "stage", "stage": "translation", "outcome": "completed", "elapsed_seconds": 5.0, "correction_round": 0},
+        {"type": "stage_start", "stage": "segmentation", "correction_round": 0, "timestamp": "2026-01-01T00:00:00+00:00"},
+        {**call, "task": "causal_segments", "attempt": 1, "outcome": "parsing_error", "error": "Extra data",
+         "retry_delay_seconds": 1},
+        {**call, "task": "causal_segments", "attempt": 2, "outcome": "request_error",
+         "error": "chat completion exceeded its 45-second attempt time limit"},
+    ]
+    (run_dir / "timings.jsonl").write_text("\n".join(map(json.dumps, records)) + "\n{partial", encoding="utf-8")
+    stats = timing_statistics(run_dir, {"status": "running"})
+    translation, segmentation = stats["stages"]
+    assert translation == {"stage": "translation", "executions": 1, "elapsed_seconds": 5.0, "running_since": None,
+                           "requests": 1, "attempts": 2, "retries": 1, "timeouts": 1, "failed_attempts": 1,
+                           "retry_wait_seconds": 1}
+    assert segmentation["running_since"] == "2026-01-01T00:00:00+00:00" and segmentation["retries"] == 1
+    assert [attempt["timed_out"] for attempt in stats["executions"][1]["attempt_log"]] == [False, True]
+    assert stats["totals"]["timeouts"] == 2 and stats["totals"]["requests"] == 2
+    assert timing_statistics(run_dir, {"status": "failed"})["executions"][1]["outcome"] == "interrupted"
+
+
 def check_instruction_contracts(root, inputs):
     """Check prompt wiring and structure, not the semantic behavior of a model."""
     example = SEGMENTATION_PROMPT.split("Representative Schnannerbach example:", 1)[1]
@@ -569,6 +598,7 @@ def main():
         inputs = check_extraction_and_translation(root)
         check_pipeline_and_exports(root, inputs)
         check_long_paths(root)
+        check_timing_statistics(root)
         check_instruction_contracts(root, inputs)
     print("Research smoke check passed (offline; data integrity, prompt wiring, correction routing and export; no model semantic-quality claim).")
 

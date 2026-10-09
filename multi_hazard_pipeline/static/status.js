@@ -27,6 +27,30 @@
     list.forEach(issue => ul.append(node('li', `${issue.stage || ''} / ${issue.code || ''}: ${issue.message || ''}`)));
     return ul;
   };
+  const stageLabels = {extraction: 'Extraction', translation: 'Translation', segmentation: 'Segmentation', categorization: 'Categorization', candidate_report: 'Candidate report', self_evaluation: 'Self-evaluation', other: 'Other model calls'};
+  const count = (value, singular, plural = `${singular}s`) => `${value} ${value === 1 ? singular : plural}`;
+  const duration = seconds => {
+    if (seconds == null) return '—';
+    if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ${String(Math.floor(seconds % 60)).padStart(2, '0')} s`;
+    return `${Math.floor(minutes / 60)} h ${String(minutes % 60).padStart(2, '0')} min`;
+  };
+  // A running step shows its saved time plus the time since it started; tick() keeps it live.
+  const runningSeconds = (base, since) => (base || 0) + (since ? Math.max(0, Date.now() - Date.parse(since)) / 1000 : 0);
+  const timeNode = (tag, seconds, since) => {
+    const element = node(tag, duration(since ? runningSeconds(seconds, since) : seconds));
+    if (since) { element.dataset.base = seconds || 0; element.dataset.since = since; }
+    return element;
+  };
+  const tick = () => document.querySelectorAll('[data-since]').forEach(element => {
+    element.textContent = duration(runningSeconds(Number(element.dataset.base), element.dataset.since));
+  });
+  const badges = item => [
+    item.retries ? node('span', `↻ ${count(item.retries, 'retry', 'retries')}`, 'stage-badge badge-retry') : null,
+    item.timeouts ? node('span', `⏱ ${count(item.timeouts, 'timeout')}`, 'stage-badge badge-timeout') : null,
+  ].filter(Boolean);
+  const stepSummary = item => [count(item.requests, 'model request'), count(item.retries, 'retry', 'retries'), count(item.timeouts, 'timeout'), count(item.failed_attempts, 'failed attempt')].join(', ');
   const provenance = item => ['filename', 'document_id', 'page', 'paragraph', 'table', 'table_path', 'row', 'cell', 'parent_chunk_id', 'char_start', 'char_end', 'source_type']
     .filter(key => item[key] != null).map(key => `${key.replaceAll('_', ' ')}: ${item[key]}`).join(' · ');
   function renderHeader() {
@@ -38,10 +62,17 @@
     $('#current-stage').textContent = (m.current_stage || '').replaceAll('_', ' ');
     $('#correction-round').textContent = `${m.correction_rounds || 0} / ${m.max_correction_rounds ?? 'Unknown'}`;
     const stages = ['preparation', 'extraction', 'translation', 'segmentation', 'categorization', 'candidate_report', 'self_evaluation', 'human_review', 'final_export'];
+    const timing = Object.fromEntries((state.statistics?.stages || []).map(item => [item.stage, item]));
     $('#stage-states').replaceChildren(...stages.filter(name => name !== 'preparation' || m.stages?.preparation).map(name => {
       const status = m.stages?.[name] || 'pending';
       const text = status === 'awaiting' ? 'awaiting you' : status;
-      return node('li', `${name === 'final_export' ? 'Export' : name.replaceAll('_', ' ')} · ${text}`, `stage-${status === 'awaiting' ? 'running' : status}`);
+      const li = node('li', `${name === 'final_export' ? 'Export' : name.replaceAll('_', ' ')} · ${text}`, `stage-${status === 'awaiting' ? 'running' : status}`);
+      const stat = timing[name];
+      if (stat) {
+        li.append(' · ', timeNode('span', stat.elapsed_seconds, stat.running_since), ...badges(stat));
+        li.title = `${stageLabels[name]} ran ${count(stat.executions, 'time')}: ${stepSummary(stat)}`;
+      }
+      return li;
     }));
     const diagnostics = [...(m.warnings || []).map(item => ({...typeof item === 'object' ? item : {}, message: item.message || item, type: 'Warning'})), ...(m.errors || []).map(item => ({...item, type: 'Pipeline failure'}))];
     $('#diagnostic-count').textContent = `(${diagnostics.length})`;
@@ -137,6 +168,58 @@
     renderTable(); renderDetails();
     const row = selectedRow();
     if (row?.evidence?.length) navigateCitation(row, evidenceIndex);
+  }
+  function renderStatistics() {
+    const stats = state.statistics || {stages: [], executions: [], totals: {}};
+    const totals = stats.totals;
+    const tile = (label, value, detail) => {
+      const element = node('div', null, 'stat-tile');
+      element.append(node('span', label, 'stat-label'), typeof value === 'string' ? node('strong', value) : value, node('small', detail));
+      return element;
+    };
+    $('#statistics-tiles').replaceChildren(
+      tile('Processing time', timeNode('strong', totals.elapsed_seconds || 0, totals.running_since), totals.running_since ? 'Still running' : 'Sum of all steps'),
+      tile('Model requests', String(totals.requests || 0), count(totals.attempts || 0, 'attempt')),
+      tile('Retries', String(totals.retries || 0), `${duration(totals.retry_wait_seconds || 0)} waiting before retries`),
+      tile('Timeouts', String(totals.timeouts || 0), count(totals.failed_attempts || 0, 'failed attempt')),
+    );
+    // Bars compare each step with the longest one; the percentage is its share of the total.
+    const seconds = item => runningSeconds(item.elapsed_seconds, item.running_since);
+    const longest = Math.max(0, ...stats.stages.map(seconds));
+    const total = stats.stages.reduce((sum, item) => sum + seconds(item), 0);
+    $('#statistics-table tbody').replaceChildren(...stats.stages.map(item => {
+      const tr = node('tr'); tr.title = `${stageLabels[item.stage] || item.stage}: ${duration(seconds(item))}; ${stepSummary(item)}`;
+      const time = node('td'), share = node('td', null, 'share-cell'), bar = node('span', null, 'share-bar'), fill = node('span');
+      time.append(timeNode('span', item.elapsed_seconds, item.running_since));
+      fill.style.width = `${longest ? seconds(item) / longest * 100 : 0}%`;
+      bar.append(fill); share.append(bar, node('span', `${total ? Math.round(seconds(item) / total * 100) : 0}%`));
+      tr.append(node('th', stageLabels[item.stage] || item.stage), time, share, node('td', item.executions), node('td', item.requests),
+        ...[item.retries, item.timeouts, item.failed_attempts].map(value => node('td', value, value ? 'flagged' : '')),
+        node('td', duration(item.retry_wait_seconds)));
+      return tr;
+    }));
+    $('#statistics-empty').hidden = Boolean(stats.stages.length);
+    const history = $('#statistics-history');
+    const open = new Set([...history.querySelectorAll('details[open]')].map(item => item.dataset.index));
+    history.replaceChildren(...stats.executions.map((item, index) => {
+      const details = node('details', null, `history-${item.outcome}`);
+      details.dataset.index = index; details.open = open.has(String(index));
+      const summary = node('summary', `${stageLabels[item.stage] || item.stage} · Round ${item.correction_round ?? '—'} · ${item.outcome} · `);
+      summary.append(timeNode('span', item.elapsed_seconds, item.outcome === 'running' ? item.started_at : null), ...badges(item));
+      details.append(summary, node('p', `${item.started_at ? `Started ${new Date(item.started_at).toLocaleString()} · ` : ''}${stepSummary(item)}`, 'hint'));
+      if (!item.attempt_log.length) { details.append(node('p', 'No model requests in this step.', 'hint')); return details; }
+      const table = node('table', null, 'stats-table attempts-table'), head = node('tr');
+      ['Task', 'Attempt', 'Outcome', 'Duration', 'Retry wait', 'Details'].forEach(text => head.append(node('th', text)));
+      table.append(head, ...item.attempt_log.map(attempt => {
+        const tr = node('tr', null, attempt.outcome === 'pass' ? '' : 'attempt-failed');
+        [(attempt.task || '').replaceAll('_', ' '), attempt.attempt, attempt.timed_out ? '⏱ timeout' : (attempt.outcome || '').replaceAll('_', ' '),
+          duration(attempt.elapsed_seconds), attempt.retry_delay_seconds ? duration(attempt.retry_delay_seconds) : '—', attempt.error || ''].forEach(value => tr.append(node('td', value)));
+        return tr;
+      }));
+      const scroll = node('div', null, 'stats-scroll'); scroll.append(table); details.append(scroll);
+      return details;
+    }));
+    if (!stats.executions.length) history.append(node('p', 'No steps have been timed yet.', 'hint'));
   }
   function renderEvaluation() {
     const evaluation = state.results?.evaluation;
@@ -238,6 +321,7 @@
   }
   function apply(data) {
     state = {...state, ...data};
+    if (data.statistics) renderStatistics();
     const autoSelect = selected == null && data.results && rows().length;
     if (autoSelect) selected = rows()[0].segment;
     renderHeader();
@@ -294,6 +378,9 @@
     $('#expand-reader').setAttribute('aria-expanded', String(expanded));
     $('#expand-reader').textContent = expanded ? 'Restore workspace' : 'Expand reader';
   });
+  $('#open-statistics').addEventListener('click', () => { renderStatistics(); $('#statistics-dialog').showModal(); });
+  $('#close-statistics').addEventListener('click', () => $('#statistics-dialog').close());
+  setInterval(tick, 1000);
   apply(JSON.parse($('#workspace-data').textContent));
   setTimeout(poll, 1500);
 })();

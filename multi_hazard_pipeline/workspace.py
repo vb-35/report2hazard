@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,93 @@ def documents(manifest: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
     return result
 
 
+STAGE_ORDER = ("extraction", "translation", "segmentation", "categorization", "candidate_report", "self_evaluation")
+# Attempt deadlines, socket/connect timeouts and gateway timeouts all surface only in the error text.
+TIMEOUT_ERROR = re.compile(r"time limit|time budget|timed out|time-out|timeout|WinError 10060", re.IGNORECASE)
+
+
+def _attempt(record: dict[str, Any]) -> dict[str, Any]:
+    error = record.get("error")
+    return {
+        "task": record.get("task"), "attempt": record.get("attempt", 1), "outcome": record.get("outcome"),
+        "elapsed_seconds": record.get("elapsed_seconds") or 0,
+        "timed_out": bool(error and TIMEOUT_ERROR.search(error)),
+        "error": error[:300] if error else None,
+        "retry_delay_seconds": record.get("retry_delay_seconds"),
+    }
+
+
+def _counts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "requests": sum(item["attempt"] == 1 for item in attempts),
+        "attempts": len(attempts),
+        "retries": sum(item["attempt"] > 1 for item in attempts),
+        "timeouts": sum(item["timed_out"] for item in attempts),
+        "failed_attempts": sum(item["outcome"] != "pass" for item in attempts),
+        "retry_wait_seconds": round(sum(item["retry_delay_seconds"] or 0 for item in attempts), 3),
+    }
+
+
+def timing_statistics(run_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Group timings.jsonl into stage executions with their model-call attempts."""
+    records = []
+    path = run_dir / "timings.jsonl"
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue  # A concurrent append can leave a partial final line.
+    executions: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+    started: dict[str, Any] | None = None
+
+    def close(stage: str, outcome: str, elapsed: float | None, record: dict[str, Any]) -> None:
+        executions.append({
+            "stage": stage, "outcome": outcome, "elapsed_seconds": elapsed,
+            "correction_round": record.get("correction_round"), "started_at": record.get("started_at"),
+            "attempt_log": list(attempts), **_counts(attempts),
+        })
+        attempts.clear()
+
+    for record in records:
+        if record.get("type") == "llm_call":
+            attempts.append(_attempt(record))
+        elif record.get("type") == "stage_start":
+            if attempts:  # Calls made outside any timed stage by older pipeline versions.
+                close("other", "completed", None, {})
+            started = record
+        elif record.get("type") == "stage":
+            # Older logs have no start records; calls before a stage end belong to that stage.
+            close(record.get("stage"), record.get("outcome"), record.get("elapsed_seconds"),
+                  {**record, "started_at": started.get("timestamp") if started else None})
+            started = None
+    if started or attempts:
+        running = manifest.get("status") == "running"
+        close(started.get("stage") if started else "other", "running" if running and started else "interrupted",
+              None, {**(started or {}), "started_at": started.get("timestamp") if started else None})
+    stages = []
+    for name in (*STAGE_ORDER, "other"):
+        runs = [item for item in executions if item["stage"] == name]
+        if not runs:
+            continue
+        stage_attempts = [attempt for item in runs for attempt in item["attempt_log"]]
+        active = next((item for item in runs if item["outcome"] == "running"), None)
+        stages.append({
+            "stage": name, "executions": len(runs),
+            "elapsed_seconds": round(sum(item["elapsed_seconds"] or 0 for item in runs), 3),
+            "running_since": active["started_at"] if active else None,
+            **_counts(stage_attempts),
+        })
+    all_attempts = [attempt for item in executions for attempt in item["attempt_log"]]
+    return {
+        "stages": stages, "executions": executions,
+        "totals": {"elapsed_seconds": round(sum(item["elapsed_seconds"] for item in stages), 3),
+                   "running_since": next((item["running_since"] for item in stages if item["running_since"]), None),
+                   **_counts(all_attempts)},
+    }
+
+
 def workspace_data(run_dir: Path, since: dict[str, str] | None = None) -> dict[str, Any]:
     since = since or {}
     # Workers use atomic file replacement. Retry if a generation changes during projection;
@@ -73,6 +161,7 @@ def workspace_data(run_dir: Path, since: dict[str, str] | None = None) -> dict[s
         versions = {
             "reader": json.dumps([tokens["source.json"], valid["source.json"], tokens["translated.json"], valid["translated.json"], documents(manifest, manifest["run_id"])]),
             "results": json.dumps([chosen, tokens.get(chosen), previous, tokens["source.json"], tokens["self_evaluation.json"], valid["self_evaluation.json"], tokens["human_review.json"]]),
+            "statistics": json.dumps([artifact_token(run_dir / "timings.jsonl"), manifest.get("status")]),
         }
         versions = {key: sha256(value.encode()).hexdigest() for key, value in versions.items()}
         payload: dict[str, Any] = {"versions": versions, "manifest": {
@@ -93,6 +182,8 @@ def workspace_data(run_dir: Path, since: dict[str, str] | None = None) -> dict[s
                 "translation_previous": bool(tokens["translated.json"] and not valid["translated.json"]),
                 "documents": document_list,
             }
+        if since.get("statistics") != versions["statistics"]:
+            payload["statistics"] = timing_statistics(run_dir, manifest)
         if since.get("results") != versions["results"]:
             result = read_json(run_dir / chosen) if chosen else {}
             rows = result.get("rows", result.get("segments", []))

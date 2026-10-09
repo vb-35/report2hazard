@@ -11,7 +11,7 @@
 </nav>{% else %}<a href="{{ url_for('index') }}">← All runs</a>{% endif %}
 <h1>{{ manifest.inputs | map(attribute='filename') | join(', ') or manifest.run_id }}</h1>
 <div id="run-status" aria-live="polite"><strong id="status-name">{{ status_label }}</strong> · <span id="current-stage">{{ manifest.current_stage | replace('_', ' ') }}</span> · Correction <span id="correction-round">{{ manifest.correction_rounds }} / {{ manifest.max_correction_rounds }}</span></div>
-<ol id="stage-states" class="stage-states" aria-label="Processing stages"></ol>
+<div class="stage-row"><ol id="stage-states" class="stage-states" aria-label="Processing stages"></ol><button id="open-statistics" type="button" class="secondary" aria-haspopup="dialog">Processing statistics</button></div>
 <p id="connection-status" class="warning" role="status" hidden></p>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
 <details id="diagnostics"><summary>Warnings and errors <span id="diagnostic-count"></span></summary><div id="diagnostic-items"></div></details>
@@ -90,6 +90,17 @@
 </section>
 <noscript><p>Enable JavaScript for live monitoring and citation navigation.</p>{% for row in workspace.results.rows %}<p>Segment {{ row.segment }}: {{ row.event }} — {{ row.process }}</p>{% endfor %}</noscript>
 </div>
+<dialog id="statistics-dialog" aria-labelledby="statistics-heading">
+<div class="section-heading"><h2 id="statistics-heading">Processing statistics</h2><button id="close-statistics" type="button" class="secondary">Close</button></div>
+<p class="hint">Times cover pipeline processing only; waiting for human review is excluded. A retry is a repeated model request attempt. Timeouts include attempt and total time limits, network timeouts, and gateway timeouts.</p>
+<div id="statistics-tiles" class="stat-tiles"></div>
+<h3>Time per step</h3>
+<div class="stats-scroll"><table id="statistics-table" class="stats-table"><thead><tr><th scope="col">Step</th><th scope="col">Time</th><th scope="col">Share of processing time</th><th scope="col">Runs</th><th scope="col">Model requests</th><th scope="col">Retries</th><th scope="col">Timeouts</th><th scope="col">Failed attempts</th><th scope="col">Retry wait</th></tr></thead><tbody></tbody></table></div>
+<p id="statistics-empty" class="hint">No timing data recorded yet.</p>
+<h3>Step history</h3>
+<p class="hint">Every time a step ran, in order. Round 0 is the initial run; later rounds are corrections.</p>
+<div id="statistics-history"></div>
+</dialog>
 <script id="workspace-data" type="application/json">{{ workspace | tojson }}</script>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='edit.js') }}" defer></script><script src="{{ url_for('static', filename='status.js') }}" defer></script>{% endblock %}

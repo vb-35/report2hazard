@@ -158,6 +158,14 @@ def invalidate_results(artifact_dir: Path, manifest: dict[str, Any], stage: str)
     manifest["stages"]["final_export"] = "pending"
 
 
+def start_stage_timing(artifact_dir: Path, manifest: dict[str, Any], stage: str) -> None:
+    # The start record lets the interface time a running stage and attribute its model calls.
+    manifest["_stage_timer"] = (stage, perf_counter())
+    append_timing(artifact_dir / "timings.jsonl", {
+        "type": "stage_start", "stage": stage, "correction_round": manifest["correction_rounds"],
+    })
+
+
 def finish_stage_timing(artifact_dir: Path, manifest: dict[str, Any], outcome: str) -> None:
     timer = manifest.pop("_stage_timer", None)
     if timer:
@@ -185,7 +193,7 @@ def set_stage(
     invalidate_results(artifact_dir, manifest, stage)
     finish_stage_timing(artifact_dir, manifest,
                         "skipped" if manifest["stages"].get(previous_stage) == "skipped" else "completed")
-    manifest["_stage_timer"] = (stage, perf_counter())
+    start_stage_timing(artifact_dir, manifest, stage)
     manifest["current_stage"] = stage
     if stage in manifest["stages"]:
         manifest["stages"][stage] = state

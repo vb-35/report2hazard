@@ -174,3 +174,35 @@ mark { background: #ffe187; color: inherit; }
 .collection-nav { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-size: .85rem; }
 .collection-nav .button { padding: .3rem .6rem; font-size: .8rem; }
 @media (max-width: 42rem) { .report-mode { grid-template-columns: 1fr; } }
+/* Step timing, retries and timeouts. */
+.stage-row { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.stage-row .stage-states { flex: 1; }
+.stage-row > button { padding: .3rem .6rem; font-size: .8rem; }
+.stage-states li span { text-transform: none; }
+.stage-badge { display: inline-block; margin-left: .35rem; padding: 0 .35rem; border-radius: .25rem; border: 1px solid; font-size: .7rem; font-weight: 700; text-transform: none; color: #203737; }
+.badge-retry { border-color: #b36d18; background: #fff4e0; }
+.badge-timeout { border-color: #b62222; background: #ffe9e9; }
+#statistics-dialog { width: min(64rem, calc(100vw - 2rem)); max-height: calc(100dvh - 2rem); border: 1px solid #c3d6c9; border-radius: .65rem; padding: 1rem 1.2rem; color: #203737; }
+#statistics-dialog::backdrop { background: #17202a66; }
+#statistics-dialog h2 { margin: 0; font-size: 1.2rem; }
+#statistics-dialog h3 { font-size: 1rem; margin: 1rem 0 .4rem; }
+.stat-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem; }
+.stat-tile { display: grid; gap: .1rem; padding: .7rem .8rem; border: 1px solid #d6e1dc; border-radius: .5rem; background: #f7faf8; }
+.stat-tile .stat-label { font-size: .8rem; color: #536962; }
+.stat-tile strong { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.stats-scroll { overflow-x: auto; }
+.stats-table { width: 100%; border-collapse: collapse; font-size: .85rem; font-variant-numeric: tabular-nums; }
+.stats-table th, .stats-table td { padding: .4rem .5rem; border-bottom: 1px solid #d6e1dc; text-align: left; vertical-align: top; }
+.stats-table thead th, .attempts-table tr:first-child th { background: #edf4ef; }
+.stats-table tbody th { font-weight: 600; white-space: nowrap; }
+.stats-table td.flagged { font-weight: 700; color: #861818; }
+.share-cell { display: flex; align-items: center; gap: .5rem; min-width: 12rem; }
+.share-bar { flex: 1; height: .7rem; background: #edf0ee; border-radius: 0 4px 4px 0; overflow: hidden; }
+.share-bar span { display: block; height: 100%; background: #226653; border-radius: 0 4px 4px 0; }
+#statistics-history details { border-bottom: 1px solid #d6e1dc; font-size: .85rem; }
+#statistics-history summary { padding: .4rem 0; }
+#statistics-history .history-failed > summary, #statistics-history .history-interrupted > summary { color: #861818; }
+.attempts-table td:last-child { overflow-wrap: anywhere; min-width: 14rem; }
+.attempts-table tr.attempt-failed td { background: #fff7f7; }
+@media (max-width: 42rem) { .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.attempts-table td:nth-child(-n+5), .stats-table td:nth-child(2) { white-space: nowrap; }

@@ -16,7 +16,9 @@ from .llm import ChatClient
 from .pipeline import (
     correct_until_terminal,
     create_human_review,
+    finish_stage_timing,
     save_manifest,
+    start_stage_timing,
     invalidate_results,
     utc_now,
 )
@@ -346,14 +348,17 @@ def _apply_candidate_edits_unlocked(
     for name in ("segmentation", "categorization", "candidate_report"):
         manifest["stages"][name] = "completed"
     save_manifest(run_dir, manifest)
+    start_stage_timing(run_dir, manifest, "self_evaluation")
     try:
         llm_client = client or ChatClient.from_config(config.llm)
         if isinstance(llm_client, ChatClient):
             llm_client = replace(llm_client, timing_path=run_dir / "timings.jsonl")
         evaluation = review_agent(llm_client, candidate, bilingual_source, config)
     except Exception as exc:
+        finish_stage_timing(run_dir, manifest, "failed")
         record_operation_failure(run_dir, manifest, "self_evaluation", exc)
         raise
+    finish_stage_timing(run_dir, manifest, "completed")
     history = read_json(run_dir / "self_evaluation.json")
     history["latest_evaluation"] = evaluation
     history["candidate_revision"] = candidate["candidate_revision"]
@@ -479,8 +484,10 @@ def _request_correction_unlocked(
             translated=translated,
         )
     except Exception as exc:
+        finish_stage_timing(run_dir, manifest, "failed")
         record_operation_failure(run_dir, manifest, manifest.get("current_stage", requested_stage), exc)
         raise
+    finish_stage_timing(run_dir, manifest, "completed")
     human["candidate_revision"] = candidate["candidate_revision"]
     human["self_evaluation_status"] = history["status"]
     if history["status"] == "pass":
