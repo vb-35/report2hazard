@@ -31,15 +31,17 @@
     .filter(key => item[key] != null).map(key => `${key.replaceAll('_', ' ')}: ${item[key]}`).join(' · ');
   function renderHeader() {
     const m = state.manifest;
-    const labels = {running: 'Processing', awaiting_human_review: 'Awaiting human review', revision_required: 'Needs automatic revision', approved: 'Approved', failed: 'Failed', rejected: 'Rejected', split: 'Collection separated'};
-    $('#status-name').textContent = labels[m.status] || m.status;
+    const labels = {queued: 'Queued', running: 'Running', awaiting_human_review: 'Awaiting human review', revision_required: 'Needs automatic revision', approved: 'Approved', failed: 'Failed', rejected: 'Rejected', split: 'Reports separated'};
+    // Runs waiting for the single worker keep status "running" with stage "queued".
+    const status = m.status === 'running' && m.current_stage === 'queued' ? 'queued' : m.status;
+    $('#status-name').textContent = labels[status] || status;
     $('#current-stage').textContent = (m.current_stage || '').replaceAll('_', ' ');
     $('#correction-round').textContent = `${m.correction_rounds || 0} / ${m.max_correction_rounds ?? 'Unknown'}`;
     const stages = ['preparation', 'extraction', 'translation', 'segmentation', 'categorization', 'candidate_report', 'self_evaluation', 'human_review', 'final_export'];
     $('#stage-states').replaceChildren(...stages.filter(name => name !== 'preparation' || m.stages?.preparation).map(name => {
-      let status = m.stages?.[name] || 'pending';
-      if (status === 'awaiting') status = 'running';
-      return node('li', `${name === 'final_export' ? 'Export' : name.replaceAll('_', ' ')} · ${status}`, `stage-${status}`);
+      const status = m.stages?.[name] || 'pending';
+      const text = status === 'awaiting' ? 'awaiting you' : status;
+      return node('li', `${name === 'final_export' ? 'Export' : name.replaceAll('_', ' ')} · ${text}`, `stage-${status === 'awaiting' ? 'running' : status}`);
     }));
     const diagnostics = [...(m.warnings || []).map(item => ({...typeof item === 'object' ? item : {}, message: item.message || item, type: 'Warning'})), ...(m.errors || []).map(item => ({...item, type: 'Pipeline failure'}))];
     $('#diagnostic-count').textContent = `(${diagnostics.length})`;

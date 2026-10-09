@@ -381,17 +381,36 @@ def check_long_paths(root):
         assert len(str(artifact_root)) > 260
         app = web.create_app(artifact_root, executor=InlineExecutor())
         client = app.test_client()
-        with patch.object(web.ChatClient, "from_config", return_value=CollectionClient()), source.open("rb") as handle:
+        with source.open("rb") as handle:
             response = client.post("/runs", data={"files": (handle, source.name)})
+        assert response.status_code == 400 and b"single report or a multi-report" in response.data
+        with (output / "notes.txt").open("w", encoding="utf-8") as handle:
+            handle.write("not a collection")
+        with (output / "notes.txt").open("rb") as handle:
+            response = client.post("/runs", data={"files": (handle, "notes.txt"), "report_mode": "multi"})
+        assert response.status_code == 400 and b"exactly one PDF" in response.data
+        with patch.object(web.ChatClient, "from_config", return_value=CollectionClient()), source.open("rb") as handle:
+            response = client.post("/runs", data={"files": (handle, source.name), "report_mode": "multi"})
         assert response.status_code == 303
         run_id = response.headers["Location"].rsplit("/", 1)[-1]
         artifact_root = resolve_path(artifact_root)
         manifest = read_json(artifact_root / run_id / "manifest.json")
         assert manifest["status"] == "split", manifest.get("errors")
         assert len(manifest["child_runs"]) == 2
+        collection = client.get(f"/runs/{run_id}/collection").get_json()
+        assert collection["status"] == "awaiting_human_review"
+        assert [stage["status"] for stage in collection["stages"]] == ["completed", "completed", "awaiting"]
+        assert [report["status"] for report in collection["reports"]] == ["awaiting_human_review"] * 2
+        page = client.get(f"/runs/{run_id}").data
+        assert b"MULTI-REPORT COLLECTION" in page and b"Extracted reports" in page
+        first, second = (child["run_id"] for child in manifest["child_runs"])
+        assert f"/runs/{second}".encode() in client.get(f"/runs/{first}").data
+        assert b"Report 2 of 2" in client.get(f"/runs/{second}").data
+        assert first.encode() not in client.get("/").data
         for child in manifest["child_runs"]:
             run = artifact_root / child["run_id"]
             assert read_json(run / "manifest.json")["status"] == "awaiting_human_review"
+            assert read_json(run / "manifest.json")["parent_run_id"] == run_id
             human_review.approve_run(run)
             assert len(read_json(run / "final_rows.json")["rows"]) == 2
             for route in ("", "/source/0", "/download/final_rows.csv"):

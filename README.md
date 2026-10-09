@@ -97,7 +97,7 @@ Open `http://127.0.0.1:5000`. The local server accepts uploads, runs one job at 
 
 Each run opens a workspace with a searchable segment table, selected-segment evidence and editing, an expandable report reader, and persistent review actions. Original, Translation, and Compare modes follow chunk IDs across companion documents; citations highlight normalized quotations in the original extracted text and the corresponding translated chunk. Repeated or unmatched quotations use an explained containing-chunk fallback. Original PDF mode uses the browser's PDF viewer and cited page references; DOCX and TXT remain available as extracted text and source downloads. Polling preserves selection, filters, reading position, and unsaved input, sends report text only when its artifacts change, and labels retained results during corrections. Older runs without revision identities wait for stage completion before treating downstream artifacts as current.
 
-Single-PDF preparation also runs on that worker. Uploads open a progress page immediately; when a collection is separated, that page links to each event's independent run. Preparation failures remain visible in the parent manifest.
+The upload form asks whether the input is a single report or a multi-report collection. A single report runs directly, without PDF separation. A multi-report collection must be one PDF; its separation (preparation) runs on that worker, then every separated report is queued as an independent child run and extracted one after another. The collection page shows live separation, extraction, and review progress, lists each report with its status, and links to it; each report page has Previous/Next links to move through the collection. Preparation failures remain visible in the parent manifest.
 
 This version intentionally uses a single-process, in-memory worker. Restarting the server loses queued/running jobs, while completed artifact directories remain reopenable. Do not enable Flask's development reloader because it can duplicate the worker. The UI has no authentication or CSRF layer and is intended only for localhost; do not bind it to an untrusted network.
 
@@ -131,7 +131,7 @@ Initial runs, human correction requests, and reviews after manual edits append m
 
 Run folders use the input report name followed by the UTC start time, for example `schnannerbach__2026-09-28_08-36-16-123456Z`. The final six digits are microseconds to distinguish closely spaced runs. Companion-file runs use the first selected file's name; split collections use each event report's filename.
 
-Statuses are `running`, `revision_required`, `awaiting_human_review`, `rejected`, `failed`, and `approved`. A collection parent uses `split` once its child runs have been created.
+Statuses are `running`, `revision_required`, `awaiting_human_review`, `rejected`, `failed`, and `approved`. The interface shows a `running` run that has not left the worker queue as Queued. A collection parent records `report_mode: multi` and uses `split` once its child runs have been created; each child records `parent_run_id`.
 
 Each extraction run directory preserves `source.json`, `translated.json`, `segments.json`, `classified.json`, `candidate_report.json`, `self_evaluation.json`, `human_review.json`, and `manifest.json` as stages complete. Collection parents hold their preparation manifest and child-run links. Only approved runs add authoritative `final_rows.json` and `final_rows.csv`.
 

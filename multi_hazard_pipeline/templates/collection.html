@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ collection.title }} · Multi-hazard review{% endblock %}
+{% block content %}
+<div id="collection" data-url="{{ url_for('collection_status', run_id=collection.run_id) }}">
+<a href="{{ url_for('index') }}">← All runs</a>
+<p class="eyebrow">MULTI-REPORT COLLECTION</p>
+<h1>{{ collection.title }}</h1>
+<section class="panel status state-{{ collection.status }}" id="collection-status" aria-live="polite">
+  <p><span class="badge" id="status-name">{{ collection.status_label }}</span> <span id="activity">{{ collection.activity }}</span></p>
+  <progress id="progress" max="100" value="{{ collection.progress }}">{{ collection.progress }}%</progress> <span id="progress-text">{{ collection.progress }}%</span>
+  <ol id="stage-states" class="stage-states" aria-label="Collection stages">
+    {% for stage in collection.stages %}<li class="stage-{{ 'running' if stage.status == 'awaiting' else stage.status }}">{{ stage.label }} · {{ stage.status }}</li>{% endfor %}
+  </ol>
+  <p id="connection-status" class="warning" role="status" hidden></p>
+  <details id="diagnostics" {% if collection.status == 'failed' %}open{% endif %}><summary>Warnings and errors <span id="diagnostic-count">({{ collection.warnings | length + collection.errors | length }})</span></summary><div id="diagnostic-items">
+    {% for item in collection.warnings %}<p>Warning: {{ item.message if item is mapping else item }}</p>{% endfor %}
+    {% for item in collection.errors %}<p>Pipeline failure{% if item.stage %} / {{ item.stage }}{% endif %}: {{ item.message }}</p>{% endfor %}
+  </div></details>
+</section>
+<section aria-labelledby="reports-heading">
+  <div class="section-heading"><h2 id="reports-heading">Extracted reports</h2>
+  <a id="review-next" class="button" hidden>Review next report →</a></div>
+  <p class="hint">Each report is extracted and reviewed on its own. Open a report to check its events, then use Previous / Next to move through the collection.</p>
+  <table id="report-table" class="report-table">
+    <thead><tr><th scope="col">#</th><th scope="col">Report</th><th scope="col">Status</th><th scope="col">Current stage</th><th scope="col">Progress</th></tr></thead>
+    <tbody>
+    {% for report in collection.reports %}
+      <tr class="state-{{ report.status }}"><td>{{ report.index }}</td><td><a href="{{ report.url }}">{{ report.filename }}</a></td><td>{{ report.status }}</td><td>{{ (report.current_stage or '') | replace('_', ' ') }}</td><td>{{ report.progress }}%</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p id="reports-empty" class="hint" {% if collection.reports %}hidden{% endif %}>Reports will appear here once the PDF has been separated.</p>
+</section>
+</div>
+<script id="collection-data" type="application/json">{{ collection | tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='collection.js') }}" defer></script>{% endblock %}

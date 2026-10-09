@@ -26,14 +26,18 @@ from .workspace import workspace_data
 SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
 DOWNLOADS = {"candidate_report.json", "final_rows.json", "final_rows.csv"}
 STATUS_LABELS = {
-    "running": "Processing",
+    "queued": "Queued",
+    "running": "Running",
     "revision_required": "Needs automatic revision",
     "awaiting_human_review": "Awaiting human review",
     "rejected": "Rejected",
     "failed": "Failed",
     "approved": "Approved",
-    "split": "Collection separated",
+    "split": "Reports separated",
+    "completed": "Completed",
 }
+REPORT_MODES = {"single", "multi"}
+REVIEWABLE = {"awaiting_human_review", "revision_required"}
 
 
 def _uploaded_report_id(paths: list[Path]) -> str:
@@ -122,47 +126,176 @@ def _submit(app: Flask, task: str, run_dir: Path, operation: Callable[..., Any],
         raise PipelineError(f"could not queue {task}: {exc}") from exc
 
 
+def _display_status(manifest: dict[str, Any]) -> str:
+    # Runs wait in the single-worker queue with status "running"; show them as queued.
+    if manifest.get("status") == "running" and manifest.get("current_stage") == "queued":
+        return "queued"
+    return manifest.get("status") or "unknown"
+
+
+def _is_collection(manifest: dict[str, Any]) -> bool:
+    return manifest.get("report_mode") == "multi" or bool(manifest.get("child_runs"))
+
+
+def _title(manifest: dict[str, Any]) -> str:
+    return ", ".join(item["filename"] for item in manifest.get("inputs", [])) or manifest.get("run_id", "")
+
+
+def _collection_data(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Summarize a multi-report collection from its live child run manifests."""
+    reports = []
+    for index, child in enumerate(manifest.get("child_runs") or [], 1):
+        try:
+            child_manifest = read_json(root / child["run_id"] / "manifest.json")
+        except (OSError, ValueError):
+            child_manifest = {}
+        reports.append({
+            "index": index,
+            "run_id": child["run_id"],
+            "filename": child["filename"],
+            "status": _display_status(child_manifest),
+            "current_stage": child_manifest.get("current_stage"),
+            "progress": child_manifest.get("progress") or 0,
+            "url": url_for("run_detail", run_id=child["run_id"]),
+        })
+    statuses = {report["status"] for report in reports}
+    processing = statuses & {"running", "queued"}
+    parent = _display_status(manifest)
+    active = next((report for report in reports if report["status"] == "running"), None)
+    if parent != "split" or not reports:
+        status = parent
+    elif "running" in statuses:
+        status = "running"
+    elif "queued" in statuses:
+        status = "queued"
+    elif statuses & REVIEWABLE:
+        status = "awaiting_human_review"
+    elif statuses == {"approved"}:
+        status = "approved"
+    else:
+        status = "completed"
+    preparation = manifest.get("stages", {}).get("preparation", "pending")
+    if status == "queued" and not reports:
+        activity = "Waiting for another task to finish"
+    elif preparation == "running":
+        activity = "Separating the PDF into individual reports"
+    elif active:
+        stage = (active["current_stage"] or "").replace("_", " ")
+        activity = f"Extracting report {active['index']} of {len(reports)} · {stage}"
+    elif processing:
+        activity = "Waiting for the next report to start"
+    elif reports:
+        done = sum(report["status"] in {"approved", "rejected"} for report in reports)
+        activity = f"{done} of {len(reports)} report(s) reviewed"
+    else:
+        activity = (manifest.get("current_stage") or "").replace("_", " ")
+    if reports:
+        extraction = "running" if processing else "failed" if statuses == {"failed"} else "completed"
+        review = ("awaiting" if statuses & REVIEWABLE else "completed"
+                  if not processing and statuses <= {"approved", "rejected", "failed"} else "pending")
+    else:
+        extraction = review = "pending"
+    return {
+        "run_id": manifest.get("run_id"),
+        "title": _title(manifest),
+        "status": status,
+        "status_label": STATUS_LABELS.get(status, status),
+        "activity": activity,
+        "progress": round(sum(report["progress"] for report in reports) / len(reports))
+        if reports else manifest.get("progress") or 0,
+        "stages": [
+            {"name": "preparation", "label": "Report separation", "status": preparation},
+            {"name": "extraction", "label": "Report extraction", "status": extraction},
+            {"name": "human_review", "label": "Human review", "status": review},
+        ],
+        "reports": reports,
+        "warnings": manifest.get("warnings", []),
+        "errors": manifest.get("errors", []),
+    }
+
+
 def _list_runs(root: Path) -> list[dict[str, Any]]:
-    runs = []
+    manifests = []
     for manifest_path in root.glob("*/manifest.json"):
         try:
-            runs.append(read_json(manifest_path))
+            manifests.append(read_json(manifest_path))
         except (OSError, ValueError):
             continue
-    return sorted(runs, key=lambda item: item.get("created_at", ""), reverse=True)
+    # Reports separated from a collection are listed inside their collection.
+    children = {child["run_id"] for manifest in manifests for child in manifest.get("child_runs") or []}
+    runs = []
+    for manifest in manifests:
+        if manifest.get("run_id") in children or manifest.get("parent_run_id"):
+            continue
+        if _is_collection(manifest):
+            summary = _collection_data(root, manifest)
+            runs.append({**summary, "collection": True, "created_at": manifest.get("created_at", ""),
+                         "report_count": len(summary["reports"])})
+        else:
+            status = _display_status(manifest)
+            runs.append({
+                "run_id": manifest.get("run_id"), "title": _title(manifest), "collection": False,
+                "status": status, "status_label": STATUS_LABELS.get(status, status),
+                "activity": (manifest.get("current_stage") or "").replace("_", " ").capitalize(),
+                "progress": manifest.get("progress") or 0, "created_at": manifest.get("created_at", ""),
+            })
+    return sorted(runs, key=lambda item: item["created_at"], reverse=True)
 
 
-def _prepare_and_execute(run_dir: Path, config: PipelineConfig) -> None:
-    """Run PDF preparation and event extraction on the same single worker."""
+def _collection_position(root: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Locate a separated report within its collection for previous/next navigation."""
+    parent_id = manifest.get("parent_run_id")
+    candidates = [root / parent_id / "manifest.json"] if parent_id else root.glob("*/manifest.json")
+    for path in candidates:
+        try:
+            parent = read_json(path)
+        except (OSError, ValueError):
+            continue
+        children = [child["run_id"] for child in parent.get("child_runs") or []]
+        if manifest["run_id"] not in children:
+            continue
+        index = children.index(manifest["run_id"])
+        return {
+            "run_id": parent["run_id"],
+            "title": _title(parent),
+            "index": index + 1,
+            "count": len(children),
+            "previous": children[index - 1] if index > 0 else None,
+            "next": children[index + 1] if index + 1 < len(children) else None,
+        }
+    return None
+
+
+def _prepare_collection(run_dir: Path, config: PipelineConfig) -> None:
+    """Separate a multi-report PDF, then extract every report as its own run on the same worker."""
     manifest = read_json(run_dir / "manifest.json")
-    selected = [Path(item["path"]) for item in manifest["inputs"]]
-    if len(selected) != 1 or selected[0].suffix.lower() != ".pdf":
-        execute_run(run_dir, config)
-        return
+    source = Path(manifest["inputs"][0]["path"])
     manifest["current_stage"] = "preparation"
     manifest["stages"]["preparation"] = "running"
     manifest["progress"] = 5
     save_manifest(run_dir, manifest)
     split_paths = split_event_reports(
-        selected[0], run_dir.parent / ".splits" / manifest["run_id"],
+        source, run_dir.parent / ".splits" / manifest["run_id"],
         ChatClient.from_config(config.llm), config,
     )
     if not split_paths:
         raise PipelineError("PDF preparation produced no event reports")
-    manifest["stages"]["preparation"] = "completed"
-    if split_paths == [resolve_path(selected[0])]:
-        save_manifest(run_dir, manifest)
-        execute_run(run_dir, config)
-        return
+    if split_paths == [resolve_path(source)]:
+        manifest["warnings"].append({"stage": "preparation", "message": "Only one event report was detected in this PDF."})
     manifest["child_runs"] = []
     for path in split_paths:
         child = create_run(
             path.parent, run_dir.parent, config,
             input_paths=[path], doc_id=_uploaded_report_id([path]),
         )
+        child["parent_run_id"] = manifest["run_id"]
+        save_manifest(Path(child["artifact_dir"]), child)
         manifest["child_runs"].append({"run_id": child["run_id"], "filename": path.name})
         save_manifest(run_dir, manifest)
+    # Every report is queued before preparation completes, so extraction shows as running at once.
+    manifest["stages"]["preparation"] = "completed"
     manifest["status"] = "split"
+    manifest["current_stage"] = "extraction"
     manifest["progress"] = 100
     save_manifest(run_dir, manifest)
     for child in manifest["child_runs"]:
@@ -186,21 +319,22 @@ def create_app(
     if owned_executor:
         atexit.register(app.extensions["pipeline_executor"].shutdown, wait=False)
 
+    def index_error(message: str):
+        return render_template("index.html", runs=_list_runs(root), error=message), 400
+
     @app.get("/")
     def index():
-        return render_template("index.html", runs=_list_runs(root), status_labels=STATUS_LABELS)
+        return render_template("index.html", runs=_list_runs(root))
 
     @app.post("/runs")
     def start_run():
         uploads = [item for item in request.files.getlist("files") if item.filename]
         input_dir = request.form.get("input_dir", "").strip()
+        report_mode = request.form.get("report_mode", "")
+        if report_mode not in REPORT_MODES:
+            return index_error("Choose whether this is a single report or a multi-report collection.")
         if bool(uploads) == bool(input_dir):
-            return render_template(
-                "index.html",
-                runs=_list_runs(root),
-                status_labels=STATUS_LABELS,
-                error="Choose uploaded files or one existing input directory.",
-            ), 400
+            return index_error("Choose uploaded files or one existing input directory.")
         try:
             run_id = new_run_id()
             if uploads:
@@ -222,33 +356,38 @@ def create_app(
             else:
                 source_dir = resolve_path(input_dir)
                 selected = discover_inputs(source_dir)
+            if report_mode == "multi" and (len(selected) != 1 or selected[0].suffix.lower() != ".pdf"):
+                raise PipelineError("A multi-report collection must be exactly one PDF file.")
             manifest = create_run(
                 source_dir, root, config, input_paths=selected,
                 doc_id=_uploaded_report_id(selected) if uploads else None,
             )
         except (OSError, PipelineError) as exc:
-            return render_template(
-                "index.html",
-                runs=_list_runs(root),
-                status_labels=STATUS_LABELS,
-                error=str(exc),
-            ), 400
+            return index_error(str(exc))
         run_dir = Path(manifest["artifact_dir"])
-        task = "preparation" if len(selected) == 1 and selected[0].suffix.lower() == ".pdf" else "pipeline"
-        if task == "preparation":
-            manifest["stages"][task] = "pending"
+        manifest["report_mode"] = report_mode
+        if report_mode == "multi":
+            # A collection only separates reports; each report gets its own child run.
+            manifest["stages"] = {"preparation": "pending"}
             save_manifest(run_dir, manifest)
-        _submit(app, task, run_dir, _prepare_and_execute, run_dir, config)
+            _submit(app, "preparation", run_dir, _prepare_collection, run_dir, config)
+        else:
+            save_manifest(run_dir, manifest)
+            _submit(app, "pipeline", run_dir, execute_run, run_dir, config)
         return redirect(url_for("run_detail", run_id=manifest["run_id"]), code=303)
 
     @app.get("/runs/<run_id>")
     def run_detail(run_id: str, error: str | None = None):
         run_dir = _run_dir(app, run_id)
         manifest = read_json(run_dir / "manifest.json")
+        if _is_collection(manifest):
+            return render_template("collection.html", collection=_collection_data(root, manifest))
+        status = _display_status(manifest)
         return render_template(
             "run.html",
             manifest=manifest,
-            status_label=STATUS_LABELS.get(manifest.get("status"), manifest.get("status", "Unknown")),
+            status_label=STATUS_LABELS.get(status, status),
+            collection=_collection_position(root, manifest),
             candidate=_optional_json(run_dir, "candidate_report.json"),
             evaluation=_optional_json(run_dir, "self_evaluation.json"),
             human=_optional_json(run_dir, "human_review.json"),
@@ -277,6 +416,15 @@ def create_app(
                 )
             }
         )
+
+    @app.get("/runs/<run_id>/collection")
+    def collection_status(run_id: str):
+        manifest = read_json(_run_dir(app, run_id) / "manifest.json")
+        if not _is_collection(manifest):
+            abort(404)
+        response = jsonify(_collection_data(root, manifest))
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.get("/runs/<run_id>/workspace")
     def run_workspace(run_id: str):

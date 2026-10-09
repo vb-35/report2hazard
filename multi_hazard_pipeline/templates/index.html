@@ -9,11 +9,18 @@
 <section class="panel" aria-labelledby="create-heading">
   <h2 id="create-heading">Start a new report</h2>
   <form id="upload-form" method="post" action="{{ url_for('start_run') }}" enctype="multipart/form-data">
+    <fieldset class="report-mode">
+      <legend>What are you uploading?</legend>
+      <label class="choice"><input type="radio" name="report_mode" value="single" required>
+        <span><strong>Single report</strong><span class="hint">One event report, possibly spread over several files (PDF, DOCX, TXT).</span></span></label>
+      <label class="choice"><input type="radio" name="report_mode" value="multi" required>
+        <span><strong>Multi-report collection</strong><span class="hint">One PDF containing several event reports. It is separated first, then each report is extracted and reviewed on its own.</span></span></label>
+    </fieldset>
     <label class="upload-zone">Choose your report files
       <input type="file" name="files" accept=".docx,.pdf,.txt" multiple>
       <span class="hint">DOCX, PDF, TXT · Up to 100 MB per upload</span>
     </label>
-    <p class="hint">Select multiple files only if they belong to the same report. PDF event collections are checked for separate reports automatically.</p>
+    <p class="hint">Select multiple files only if they belong to the same single report.</p>
     <details><summary>Use a folder on this computer instead</summary>
     <label>Existing input directory
       <input type="text" name="input_dir" placeholder="C:\reports\one-report">
@@ -30,9 +37,9 @@
   <div class="run-list">
     {% for run in runs %}
     <a class="run-card state-{{ run.status }}" href="{{ url_for('run_detail', run_id=run.run_id) }}">
-      <strong>{{ run.inputs | map(attribute='filename') | join(', ') or run.run_id }}</strong>
-      <span class="badge">{{ status_labels.get(run.status, run.status) }}</span>
-      <span>{{ run.current_stage | replace('_', ' ') | title }} · {{ run.progress or 0 }}%</span>
+      <strong>{{ run.title }}{% if run.collection %} <span class="hint">· Multi-report collection · {{ run.report_count }} report(s)</span>{% endif %}</strong>
+      <span class="badge">{{ run.status_label }}</span>
+      <span>{{ run.activity }} · {{ run.progress }}%</span>
       <small>{{ run.run_id }}</small>
     </a>
     {% endfor %}

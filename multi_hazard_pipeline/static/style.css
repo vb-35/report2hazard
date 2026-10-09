@@ -151,3 +151,26 @@ mark { background: #ffe187; color: inherit; }
   .workspace-panes { height: 32rem; flex: none; }
   .review-actions { position: sticky; bottom: 0; z-index: 3; }
 }
+/* Report type choice, collections, and running indicators. */
+.report-mode { border: 0; padding: 0; margin: 0 0 1rem; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+.report-mode legend { font-weight: 700; margin-bottom: .5rem; }
+.choice { display: flex; align-items: start; gap: .6rem; margin: 0; padding: .9rem; border: 1px solid #c4d5c9; border-radius: .6rem; background: white; cursor: pointer; }
+.choice:has(input:checked) { border-color: #226653; background: #f2f8f4; box-shadow: inset 0 0 0 1px #226653; }
+.choice input { flex: none; margin-top: .3rem; }
+.choice .hint { display: block; }
+.stage-states .stage-running::before { content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .35rem; border-radius: 50%; background: #0765aa; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .stage-states .stage-running::before { animation: none; } }
+#collection .status p { margin: 0 0 .5rem; }
+#collection progress { width: min(24rem, 70%); vertical-align: middle; }
+.report-table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #d6e1dc; border-radius: .5rem; font-size: .9rem; }
+.report-table th { text-align: left; background: #edf4ef; }
+.report-table td, .report-table th { padding: .55rem .7rem; border-bottom: 1px solid #d6e1dc; }
+.report-table tr[class^="state-"] td:first-child { border-left: .35rem solid #b4c1bd; }
+.report-table tr.state-running td:first-child { border-left-color: #1473e6; }
+.report-table tr.state-awaiting_human_review td:first-child, .report-table tr.state-revision_required td:first-child { border-left-color: #7c3aed; }
+.report-table tr.state-approved td:first-child { border-left-color: #16803a; }
+.report-table tr.state-failed td:first-child, .report-table tr.state-rejected td:first-child { border-left-color: #c62828; }
+.collection-nav { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; font-size: .85rem; }
+.collection-nav .button { padding: .3rem .6rem; font-size: .8rem; }
+@media (max-width: 42rem) { .report-mode { grid-template-columns: 1fr; } }

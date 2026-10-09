@@ -3,7 +3,12 @@
 {% block content %}
 <div id="workspace" data-url="{{ url_for('run_workspace', run_id=manifest.run_id) }}" data-labels='{{ controlled_labels | tojson }}'>
 <header class="workspace-header">
-<a href="{{ url_for('index') }}">← All runs</a>
+{% if collection %}<nav class="collection-nav" aria-label="Reports in this collection">
+<a href="{{ url_for('run_detail', run_id=collection.run_id) }}">← Collection: {{ collection.title }}</a>
+<span>Report {{ collection.index }} of {{ collection.count }}</span>
+{% if collection.previous %}<a class="button secondary" href="{{ url_for('run_detail', run_id=collection.previous) }}">← Previous report</a>{% endif %}
+{% if collection.next %}<a class="button secondary" href="{{ url_for('run_detail', run_id=collection.next) }}">Next report →</a>{% endif %}
+</nav>{% else %}<a href="{{ url_for('index') }}">← All runs</a>{% endif %}
 <h1>{{ manifest.inputs | map(attribute='filename') | join(', ') or manifest.run_id }}</h1>
 <div id="run-status" aria-live="polite"><strong id="status-name">{{ status_label }}</strong> · <span id="current-stage">{{ manifest.current_stage | replace('_', ' ') }}</span> · Correction <span id="correction-round">{{ manifest.correction_rounds }} / {{ manifest.max_correction_rounds }}</span></div>
 <ol id="stage-states" class="stage-states" aria-label="Processing stages"></ol>
