@@ -6,6 +6,7 @@
 <p>Upload your report, review the extracted events, and download your approved results.</p></div>
 <ol class="steps"><li><strong>1. Add a report</strong><span>PDF, Word, or plain text</span></li><li><strong>2. Review the results</strong><span>Check events and source evidence</span></li><li><strong>3. Approve & download</strong><span>Export a CSV or JSON file</span></li></ol>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+{% if deleted %}<p class="message" role="status">Deleted “{{ deleted }}” and its files.</p>{% endif %}
 <section class="panel" aria-labelledby="create-heading">
   <h2 id="create-heading">Start a new report</h2>
   <form id="upload-form" method="post" action="{{ url_for('start_run') }}" enctype="multipart/form-data">
@@ -36,15 +37,38 @@
   {% if runs %}
   <div class="run-list">
     {% for run in runs %}
+    <div class="run-item">
     <a class="run-card state-{{ run.status }}" href="{{ url_for('run_detail', run_id=run.run_id) }}">
       <strong>{{ run.title }}{% if run.collection %} <span class="hint">· Multi-report collection · {{ run.report_count }} report(s)</span>{% endif %}</strong>
       <span class="badge">{{ run.status_label }}</span>
       <span>{{ run.activity }} · {{ run.progress }}%</span>
       <small>{{ run.run_id }}</small>
     </a>
+    {% set busy = run.status in ['running', 'queued'] %}
+    <button type="button" class="delete-run" data-url="{{ url_for('delete_run', run_id=run.run_id) }}"
+      data-title="{{ run.title }}" data-folder="{{ run.folder }}" data-reports="{{ run.report_count if run.collection else 0 }}"
+      {% if busy %}disabled title="Wait until processing finishes to delete this run"{% endif %}
+      aria-label="Delete {{ run.title }}">Delete</button>
+    </div>
     {% endfor %}
   </div>
+  <dialog id="delete-dialog" aria-labelledby="delete-heading">
+    <form id="delete-form" method="post">
+      <h2 id="delete-heading">Delete this run?</h2>
+      <p><strong id="delete-title"></strong></p>
+      <div class="message warning" role="alert">
+        <p><strong>Warning: this permanently deletes the run from your computer. It cannot be undone.</strong></p>
+        <p>Its results folder is removed, with the extracted events, your review decisions and the exported CSV/JSON files:</p>
+        <code id="delete-folder"></code>
+        <p id="delete-reports"></p>
+        <p>Copies of reports you uploaded through this page are deleted too. Report files you chose from a folder on this computer are not touched.</p>
+      </div>
+      <div class="actions"><button type="button" class="secondary" id="cancel-delete" autofocus>Cancel</button>
+        <button type="submit" class="reject">Delete permanently</button></div>
+    </form>
+  </dialog>
   {% else %}<div class="empty-state"><strong>Your first report starts here.</strong><p>Choose a file above. Your results will appear here so you can return to them later.</p></div>{% endif %}
 </section>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}" defer></script>
+<script src="{{ url_for('static', filename='delete.js') }}" defer></script>{% endblock %}

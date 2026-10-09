@@ -35,7 +35,7 @@ New runs default to `Inferact/Qwen3.8-27B-NVFP4` with `medium` reasoning and a 6
 2. Wait for processing, then check the events and expand their source evidence.
 3. Click **Approve report**, then **Download approved CSV** to use the results in Excel.
 
-Previous reports remain under **Your reports**. Results are saved in the ignored `results` folder. To request changes, expand **Add an issue or request a correction** on the review page. On a new computer, install Python and run `python -m pip install -r requirements.txt` once before launching.
+Previous reports remain under **Your reports**. Results are saved in the ignored `results` folder. **Delete** removes a finished run's folder from `results` after a warning; deleting a multi-report collection also deletes its separated reports. Uploaded and separated report copies go with it, but files chosen with **Use a folder on this computer** are never deleted. A run that is still processing cannot be deleted. To request changes, expand **Add an issue or request a correction** on the review page. On a new computer, install Python and run `python -m pip install -r requirements.txt` once before launching.
 
 On Windows, the pipeline uses extended-length filesystem paths for deeply nested project folders, including PDF splitting and exports. No Windows long-path setting change is required.
 

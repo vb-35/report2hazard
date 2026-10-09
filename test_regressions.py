@@ -422,6 +422,30 @@ def check_long_paths(root):
         assert client.get("/").status_code == 200
         assert client.get(f"/runs/{run_id}/download/manifest.json").status_code == 404
         assert client.get(f"/runs/{run_id}/source/../manifest.json").status_code == 404
+
+        # Deleting removes run folders and interface copies, never a user's own report folder.
+        page = client.get("/").data
+        assert b"delete-dialog" in page and b"cannot be undone" in page
+        user_inputs = artifact_root / "inputs"
+        user_inputs.mkdir()
+        (user_inputs / "own.txt").write_text("A debris flow reached the torrent.", encoding="utf-8")
+        own = pipeline.create_run(user_inputs, artifact_root, input_paths=[user_inputs / "own.txt"])
+        own_dir = artifact_root / own["run_id"]
+        assert client.post(f"/runs/{own['run_id']}/delete").status_code == 409
+        assert own_dir.is_dir()
+        assert client.post(f"/runs/{first}/delete").status_code == 409
+        assert (artifact_root / first).is_dir()
+        upload_dirs = list((artifact_root / ".uploads").iterdir())
+        assert len(upload_dirs) == 1 and (artifact_root / ".splits" / run_id).is_dir()
+        response = client.post(f"/runs/{run_id}/delete")
+        assert response.status_code == 303 and "deleted=" in response.headers["Location"]
+        assert not any((artifact_root / name).exists()
+                       for name in (run_id, first, second, f".splits/{run_id}"))
+        assert not upload_dirs[0].exists()
+        assert client.post(f"/runs/{run_id}/delete").status_code == 404
+        write_json(own_dir / "manifest.json", read_json(own_dir / "manifest.json") | {"status": "failed"})
+        assert client.post(f"/runs/{own['run_id']}/delete").status_code == 303
+        assert not own_dir.exists() and (user_inputs / "own.txt").is_file()
     finally:
         assert base.resolve().is_relative_to(root.resolve())
         shutil.rmtree(resolve_path(base), ignore_errors=False)

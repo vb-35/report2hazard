@@ -206,3 +206,18 @@ mark { background: #ffe187; color: inherit; }
 .attempts-table tr.attempt-failed td { background: #fff7f7; }
 @media (max-width: 42rem) { .stat-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .attempts-table td:nth-child(-n+5), .stats-table td:nth-child(2) { white-space: nowrap; }
+/* Deleting a run from the list. */
+.run-item { position: relative; }
+.run-item .run-card { padding-right: 7rem; }
+.delete-run { position: absolute; top: 1.1rem; right: 1.1rem; padding: .35rem .7rem; font-size: .85rem; background: white; color: #a92323; border: 1px solid #a92323; }
+.delete-run:hover:not(:disabled) { background: #fff1f1; }
+.delete-run:disabled { color: #8b99a5; border-color: #b4c1bd; cursor: not-allowed; }
+#delete-dialog { width: min(36rem, calc(100vw - 2rem)); border: 1px solid #c3d6c9; border-radius: .65rem; padding: 1rem 1.2rem; color: #203737; }
+#delete-dialog::backdrop { background: #17202a66; }
+#delete-dialog h2 { margin: 0 0 .5rem; font-size: 1.2rem; }
+#delete-dialog .message.warning { background: #fff4e0; border: 1px solid #d97706; }
+#delete-dialog .message p { margin: 0 0 .5rem; }
+#delete-dialog code { display: block; margin: 0 0 .5rem; overflow-wrap: anywhere; font-size: .85rem; }
+#delete-dialog .actions { justify-content: flex-end; }
+#delete-reports:empty { display: none; }
+#delete-dialog .actions { margin-top: .9rem; }

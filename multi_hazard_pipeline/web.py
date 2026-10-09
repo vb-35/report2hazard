@@ -4,6 +4,7 @@ import atexit
 import hashlib
 import json
 import re
+import shutil
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -38,6 +39,8 @@ STATUS_LABELS = {
 }
 REPORT_MODES = {"single", "multi"}
 REVIEWABLE = {"awaiting_human_review", "revision_required"}
+# Folders where the interface keeps its own copies of uploaded and separated reports.
+INPUT_COPY_DIRS = (".uploads", ".splits")
 
 
 def _uploaded_report_id(paths: list[Path]) -> str:
@@ -239,7 +242,72 @@ def _list_runs(root: Path) -> list[dict[str, Any]]:
                 "activity": (manifest.get("current_stage") or "").replace("_", " ").capitalize(),
                 "progress": manifest.get("progress") or 0, "created_at": manifest.get("created_at", ""),
             })
+    for run in runs:
+        run["folder"] = _display_path(root / run["run_id"])
     return sorted(runs, key=lambda item: item["created_at"], reverse=True)
+
+
+def _display_path(path: Path) -> str:
+    """Show a path without the Windows long-path prefix added by resolve_path."""
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    return text.removeprefix("\\\\?\\")
+
+
+def _input_copy_dir(root: Path, path_text: str) -> Path | None:
+    """Return the interface folder holding a copied input; a user's own input folder gives None."""
+    path = resolve_path(path_text)
+    for name in INPUT_COPY_DIRS:
+        try:
+            relative = path.relative_to(root / name)
+        except ValueError:
+            continue
+        if len(relative.parts) > 1:
+            return root / name / relative.parts[0]
+    return None
+
+
+def _remove_folder(path: Path) -> None:
+    """Delete a folder, removing its manifest last so a failed deletion stays listed and retryable."""
+    if not path.is_dir():
+        return
+    for entry in path.iterdir():
+        if entry.name == "manifest.json":
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    (path / "manifest.json").unlink(missing_ok=True)
+    path.rmdir()
+
+
+def _delete_run(root: Path, run_dir: Path) -> None:
+    """Permanently delete a run, its separated reports, and the input copies no other run uses."""
+    with run_lock(run_dir):
+        manifests = {}
+        for manifest_path in root.glob("*/manifest.json"):
+            try:
+                manifests[manifest_path.parent.name] = read_json(manifest_path)
+            except (OSError, ValueError):
+                continue
+        manifest = manifests[run_dir.name]
+        if any(run_dir.name == child["run_id"] for other in manifests.values() for child in other.get("child_runs") or []):
+            raise PipelineError("This report belongs to a collection; delete the whole collection instead.")
+        doomed = [run_dir.name] + [child["run_id"] for child in manifest.get("child_runs") or []
+                                   if child["run_id"] in manifests]
+        if any(manifests[run_id].get("status") in {"running", "queued"} for run_id in doomed):
+            raise PipelineError("This run is still processing. Wait until it finishes before deleting it.")
+        copies = {_input_copy_dir(root, item.get("path", ""))
+                  for run_id in doomed for item in manifests[run_id].get("inputs", [])}
+        copies.add(root / ".splits" / run_dir.name)
+        # Another run may read reports from the same folder (for example through "Use a folder").
+        copies -= {_input_copy_dir(root, item.get("path", ""))
+                   for run_id, other in manifests.items() if run_id not in doomed for item in other.get("inputs", [])}
+        # The collection's own folder goes last, so a failure leaves it listed for another attempt.
+        for path in [root / run_id for run_id in doomed[1:]] + sorted(copies - {None}) + [run_dir]:
+            _remove_folder(path)
 
 
 def _collection_position(root: Path, manifest: dict[str, Any]) -> dict[str, Any] | None:
@@ -319,12 +387,12 @@ def create_app(
     if owned_executor:
         atexit.register(app.extensions["pipeline_executor"].shutdown, wait=False)
 
-    def index_error(message: str):
-        return render_template("index.html", runs=_list_runs(root), error=message), 400
+    def index_error(message: str, status: int = 400):
+        return render_template("index.html", runs=_list_runs(root), error=message), status
 
     @app.get("/")
     def index():
-        return render_template("index.html", runs=_list_runs(root))
+        return render_template("index.html", runs=_list_runs(root), deleted=request.args.get("deleted"))
 
     @app.post("/runs")
     def start_run():
@@ -335,6 +403,7 @@ def create_app(
             return index_error("Choose whether this is a single report or a multi-report collection.")
         if bool(uploads) == bool(input_dir):
             return index_error("Choose uploaded files or one existing input directory.")
+        upload_dir = None
         try:
             run_id = new_run_id()
             if uploads:
@@ -363,6 +432,9 @@ def create_app(
                 doc_id=_uploaded_report_id(selected) if uploads else None,
             )
         except (OSError, PipelineError) as exc:
+            # A refused upload must not leave its copied files behind.
+            if upload_dir is not None:
+                shutil.rmtree(upload_dir, ignore_errors=True)
             return index_error(str(exc))
         run_dir = Path(manifest["artifact_dir"])
         manifest["report_mode"] = report_mode
@@ -528,6 +600,19 @@ def create_app(
         except (PipelineError, ValueError) as exc:
             return run_detail(run_id, error=str(exc)), 409
         return redirect(url_for("run_detail", run_id=run_id), code=303)
+
+    @app.post("/runs/<run_id>/delete")
+    def delete_run(run_id: str):
+        run_dir = _run_dir(app, run_id)
+        title = _title(read_json(run_dir / "manifest.json"))
+        try:
+            _delete_run(root, run_dir)
+        except PipelineError as exc:
+            return index_error(str(exc), 409)
+        except OSError as exc:
+            return index_error(f"Some files of this run could not be deleted ({exc}). "
+                               "Close any program using them and try again.", 500)
+        return redirect(url_for("index", deleted=title), code=303)
 
     @app.get("/runs/<run_id>/download/<artifact>")
     def download(run_id: str, artifact: str):
