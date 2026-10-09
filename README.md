@@ -37,6 +37,8 @@ New runs default to `Inferact/Qwen3.8-27B-NVFP4` with `medium` reasoning and a 6
 
 Previous reports remain under **Your reports**. Results are saved in the ignored `results` folder. To request changes, expand **Add an issue or request a correction** on the review page. On a new computer, install Python and run `python -m pip install -r requirements.txt` once before launching.
 
+On Windows, the pipeline uses extended-length filesystem paths for deeply nested project folders, including PDF splitting and exports. No Windows long-path setting change is required.
+
 ## Command-line usage
 
 Install dependencies and set the server-side LLM key:

@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text
+from .core import normalize_text, resolve_path
 from .errors import PipelineError
 from .llm import ChatClient
 from .schemas import event_separation_response_schema
@@ -388,6 +388,8 @@ def _detect_boundaries(
 
 
 def _write_ranges(input_pdf: Path, output_dir: Path, ranges: list[EventRange]) -> list[Path]:
+    input_pdf = resolve_path(input_pdf)
+    output_dir = resolve_path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     reader = PdfReader(str(input_pdf))
     outputs = [output_dir / safe_event_filename(event, len(reader.pages)) for event in ranges]
@@ -423,8 +425,8 @@ def split_event_reports(
     client: ChatClient,
     config: PipelineConfig = DEFAULT_CONFIG,
 ) -> list[Path]:
-    input_pdf = Path(input_pdf).resolve()
-    output_dir = Path(output_dir).resolve()
+    input_pdf = resolve_path(input_pdf)
+    output_dir = resolve_path(output_dir)
     if not input_pdf.is_file() or input_pdf.suffix.lower() != ".pdf":
         raise PipelineError(f"input is not a PDF file: {input_pdf}")
     try:

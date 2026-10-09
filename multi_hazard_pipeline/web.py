@@ -13,7 +13,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.utils import secure_filename
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import read_json, run_lock
+from .core import read_json, resolve_path, run_lock
 from .errors import PipelineError
 from .human_review import apply_candidate_edits, approve_run, reject_run, request_correction
 from .llm import ChatClient
@@ -150,7 +150,7 @@ def _prepare_and_execute(run_dir: Path, config: PipelineConfig) -> None:
     if not split_paths:
         raise PipelineError("PDF preparation produced no event reports")
     manifest["stages"]["preparation"] = "completed"
-    if split_paths == [selected[0].resolve()]:
+    if split_paths == [resolve_path(selected[0])]:
         save_manifest(run_dir, manifest)
         execute_run(run_dir, config)
         return
@@ -176,7 +176,7 @@ def create_app(
     executor: Any | None = None,
 ) -> Flask:
     app = Flask(__name__)
-    root = Path(artifact_root).resolve()
+    root = resolve_path(artifact_root)
     root.mkdir(parents=True, exist_ok=True)
     app.config.update(ARTIFACT_ROOT=str(root), PIPELINE_CONFIG=config, MAX_CONTENT_LENGTH=100 * 1024 * 1024)
     owned_executor = executor is None
@@ -220,7 +220,7 @@ def create_app(
                     selected.append(path)
                 source_dir = upload_dir
             else:
-                source_dir = Path(input_dir).resolve()
+                source_dir = resolve_path(input_dir)
                 selected = discover_inputs(source_dir)
             manifest = create_run(
                 source_dir, root, config, input_paths=selected,
@@ -303,7 +303,7 @@ def create_app(
         index = int(document_id)
         if index >= len(inputs):
             abort(404)
-        path = Path(inputs[index].get("path", ""))
+        path = resolve_path(inputs[index].get("path", ""))
         if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
             abort(404)
         return send_file(path, as_attachment=path.suffix.lower() != ".pdf", download_name=inputs[index].get("filename", path.name))

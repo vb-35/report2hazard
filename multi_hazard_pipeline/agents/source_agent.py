@@ -10,7 +10,7 @@ from docx import Document
 from docx.text.paragraph import Paragraph
 from pypdf import PdfReader
 
-from ..core import normalize_text
+from ..core import normalize_text, resolve_path
 from ..errors import PipelineError
 
 
@@ -21,6 +21,7 @@ def stable_document_id(report_id: str, path: Path) -> str:
 
 
 def discover_inputs(input_dir: Path) -> list[Path]:
+    input_dir = resolve_path(input_dir)
     if not input_dir.exists():
         raise PipelineError(f"input directory does not exist: {input_dir}")
     if not input_dir.is_dir():
@@ -150,7 +151,7 @@ def extract_txt(path: Path, doc_id: str, next_id: int) -> tuple[list[dict[str, A
 def source_agent(input_paths: list[Path], doc_id: str, *, max_chunk_chars: int = 2000) -> dict[str, Any]:
     if not input_paths:
         raise PipelineError("source extraction requires at least one report file")
-    paths = [Path(path).resolve() for path in input_paths]
+    paths = [resolve_path(path) for path in input_paths]
     parents = {path.parent for path in paths}
     if len(parents) != 1:
         raise PipelineError("files for one report must be selected from one input directory")

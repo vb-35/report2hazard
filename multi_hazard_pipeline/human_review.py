@@ -9,7 +9,7 @@ import uuid
 
 from .agents import review_agent
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, read_json, run_lock, write_csv, write_json
+from .core import normalize_text, read_json, resolve_path, run_lock, write_csv, write_json
 from .errors import PipelineError
 from .language import language_summary, recorded_language_config
 from .llm import ChatClient
@@ -35,7 +35,7 @@ EDITABLE_FIELDS = {
 
 
 def load_run(artifact_dir: str | Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
-    run_dir = Path(artifact_dir).resolve()
+    run_dir = resolve_path(artifact_dir)
     manifest_path = run_dir / "manifest.json"
     if not manifest_path.is_file():
         raise PipelineError(f"run manifest not found: {manifest_path}")

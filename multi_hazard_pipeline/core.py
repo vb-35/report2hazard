@@ -16,10 +16,23 @@ _RUN_LOCKS: dict[str, threading.RLock] = {}
 _RUN_LOCKS_GUARD = threading.Lock()
 
 
+def resolve_path(path: str | Path) -> Path:
+    """Resolve filesystem paths, bypassing Windows MAX_PATH without registry changes."""
+    resolved = Path(path).resolve()
+    if os.name != "nt":
+        return resolved
+    value = str(resolved)
+    if value.startswith("\\\\?\\"):
+        return resolved
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
 @contextmanager
 def run_lock(path: Path):
     """Serialize state transitions for one run within the local process."""
-    key = str(path.resolve())
+    key = str(resolve_path(path))
     with _RUN_LOCKS_GUARD:
         lock = _RUN_LOCKS.setdefault(key, threading.RLock())
     with lock:
@@ -59,6 +72,7 @@ def parse_json_object(raw: str) -> Any:
 
 
 def write_json(path: Path, payload: Any) -> None:
+    path = resolve_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -74,10 +88,11 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(resolve_path(path).read_text(encoding="utf-8"))
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) -> None:
+    path = resolve_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

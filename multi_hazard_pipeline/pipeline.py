@@ -20,7 +20,7 @@ from .agents import (
     translation_agent,
 )
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, read_json, write_json
+from .core import normalize_text, read_json, resolve_path, write_json
 from .errors import PipelineError
 from .language import language_settings, language_summary, recorded_language_config
 from .llm import ChatClient, append_timing
@@ -203,11 +203,11 @@ def create_run(
     input_paths: list[Path] | None = None,
     doc_id: str | None = None,
 ) -> dict[str, Any]:
-    input_path = Path(input_dir).resolve()
-    selected = [path.resolve() for path in input_paths] if input_paths is not None else discover_inputs(input_path)
+    input_path = resolve_path(input_dir)
+    selected = [resolve_path(path) for path in input_paths] if input_paths is not None else discover_inputs(input_path)
     if not selected:
         raise PipelineError(f"no supported report files selected in {input_path}")
-    output_path = Path(output_dir).resolve()
+    output_path = resolve_path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     identifier = run_id or new_run_id(selected[0].stem)
     artifact_dir = output_path / identifier
@@ -428,7 +428,7 @@ def execute_run(
     *,
     client: ChatClient | None = None,
 ) -> dict[str, Any]:
-    run_dir = Path(artifact_dir).resolve()
+    run_dir = resolve_path(artifact_dir)
     manifest = read_json(run_dir / "manifest.json")
     config = recorded_language_config(config, manifest)
     manifest["status"] = "running"

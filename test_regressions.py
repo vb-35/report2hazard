@@ -2,7 +2,9 @@
 
 import csv
 import json
+import os
 import re
+import shutil
 import socket
 import urllib.request
 from copy import deepcopy
@@ -13,8 +15,10 @@ from unittest import TestCase
 from unittest.mock import patch
 
 from docx import Document
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from multi_hazard_pipeline import human_review, language, pipeline
+from multi_hazard_pipeline import human_review, language, pipeline, splitter, web
 from multi_hazard_pipeline.agents.classification_agent import _classification_prompt, classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES, review_agent
 from multi_hazard_pipeline.agents.segment_agent import (
@@ -23,7 +27,7 @@ from multi_hazard_pipeline.agents.segment_agent import (
 from multi_hazard_pipeline.agents.source_agent import source_agent, split_source_chunks
 from multi_hazard_pipeline.agents.translation_agent import translation_agent
 from multi_hazard_pipeline.config import DEFAULT_CONFIG, TAXONOMY_DECISION_RULES
-from multi_hazard_pipeline.core import read_json, write_json
+from multi_hazard_pipeline.core import read_json, resolve_path, write_json
 from multi_hazard_pipeline.errors import PipelineError
 from multi_hazard_pipeline.llm import ChatClient
 from multi_hazard_pipeline.payloads import compact_json, resolve_chunk_ids, source_payload
@@ -312,6 +316,96 @@ def blocked_network(*args, **kwargs):
     raise AssertionError("The smoke check must not contact a model service or network")
 
 
+def check_long_paths(root):
+    base = root / "long-path-check"
+    # Match the reported 220-character parent; the old temporary filename exceeds 260.
+    output = base / ("x" * (220 - len(str(base.resolve())) - 1))
+    resolved = resolve_path(output)
+    assert resolve_path(resolved) == resolved
+    if os.name == "nt":
+        assert str(resolved).startswith("\\\\?\\")
+        with patch.object(Path, "resolve", return_value=Path("\\\\server\\share\\reports")):
+            assert str(resolve_path("unused")) == "\\\\?\\UNC\\server\\share\\reports"
+    try:
+        resolved.mkdir(parents=True)
+        source = base / "collection.pdf"
+        writer = PdfWriter()
+        font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+                                 NameObject("/Subtype"): NameObject("/Type1"),
+                                 NameObject("/BaseFont"): NameObject("/Helvetica")})
+        texts = ["4.1 Schallerbach. Heavy rainfall mobilized sediment into the channel.",
+                 "Debris blocked the bridge.",
+                 "4.2 Seigesbach. Heavy rainfall mobilized sediment into the channel.",
+                 "Debris blocked the bridge."]
+        for text in texts:
+            page = writer.add_blank_page(width=600, height=800)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})})
+            stream = DecodedStreamObject()
+            stream.set_data(f"BT /F1 12 Tf 40 740 Td ({text}) Tj ET".encode("ascii"))
+            page[NameObject("/Contents")] = stream
+        writer.write(str(source))
+        ranges = [splitter.EventRange(1, "4.1 Schallerbach", 1, 2),
+                  splitter.EventRange(2, "4.2 Seigesbach", 3, 4)]
+        assert len(str(output / ".01-4-1-schallerbach_pages-001-002-12345678.tmp")) == 268
+        outputs = splitter._write_ranges(source, output, ranges)
+        for index, path in enumerate(outputs):
+            pages = PdfReader(str(path)).pages
+            assert len(pages) == 2
+            assert [page.extract_text() for page in pages] == texts[index * 2:index * 2 + 2]
+        assert not list(resolved.glob("*.tmp"))
+        # Force failure after one temporary PDF has been written; cleanup must still work.
+        with patch.object(splitter.PdfWriter, "write", side_effect=[None, OSError("disk full")]):
+            with TestCase().assertRaises(PipelineError):
+                splitter._write_ranges(source, output / "failed", ranges)
+        assert not list((resolved / "failed").iterdir())
+
+        class CollectionClient(SmokeClient):
+            def complete_json(self, **kwargs):
+                if kwargs["response_schema"]["name"] != "event_report_separation":
+                    return super().complete_json(**kwargs)
+                result = {"status": "pass", "events": [
+                    {"title": event.title, "start_page": event.start_page,
+                     "heading_quote": event.title, "confidence": 0.99}
+                    for event in ranges], "collection_end": None, "warnings": []}
+                kwargs["validate"](result)
+                return result
+
+        class InlineExecutor:
+            def submit(self, operation):
+                operation()
+
+        # Exercise the real web preparation, child runs, review, and download paths offline.
+        artifact_root = output / ("deep-results-" * 7)
+        assert len(str(artifact_root)) > 260
+        app = web.create_app(artifact_root, executor=InlineExecutor())
+        client = app.test_client()
+        with patch.object(web.ChatClient, "from_config", return_value=CollectionClient()), source.open("rb") as handle:
+            response = client.post("/runs", data={"files": (handle, source.name)})
+        assert response.status_code == 303
+        run_id = response.headers["Location"].rsplit("/", 1)[-1]
+        artifact_root = resolve_path(artifact_root)
+        manifest = read_json(artifact_root / run_id / "manifest.json")
+        assert manifest["status"] == "split", manifest.get("errors")
+        assert len(manifest["child_runs"]) == 2
+        for child in manifest["child_runs"]:
+            run = artifact_root / child["run_id"]
+            assert read_json(run / "manifest.json")["status"] == "awaiting_human_review"
+            human_review.approve_run(run)
+            assert len(read_json(run / "final_rows.json")["rows"]) == 2
+            for route in ("", "/source/0", "/download/final_rows.csv"):
+                response = client.get(f"/runs/{child['run_id']}{route}")
+                assert response.status_code == 200, route
+                assert response.data
+                response.close()
+        assert client.get("/").status_code == 200
+        assert client.get(f"/runs/{run_id}/download/manifest.json").status_code == 404
+        assert client.get(f"/runs/{run_id}/source/../manifest.json").status_code == 404
+    finally:
+        assert base.resolve().is_relative_to(root.resolve())
+        shutil.rmtree(resolve_path(base), ignore_errors=False)
+
+
 def check_instruction_contracts(root, inputs):
     """Check prompt wiring and structure, not the semantic behavior of a model."""
     example = SEGMENTATION_PROMPT.split("Representative Schnannerbach example:", 1)[1]
@@ -430,6 +524,7 @@ def main():
         check_model_payloads(root)
         inputs = check_extraction_and_translation(root)
         check_pipeline_and_exports(root, inputs)
+        check_long_paths(root)
         check_instruction_contracts(root, inputs)
     print("Research smoke check passed (offline; data integrity, prompt wiring, correction routing and export; no model semantic-quality claim).")
 
