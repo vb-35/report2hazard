@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, resolve_path
+from .core import normalize_text, resolve_path, restore_source_quote
 from .errors import PipelineError
 from .llm import ChatClient
 from .schemas import event_separation_response_schema
@@ -141,7 +141,7 @@ def resolve_toc_candidates(
 
 
 def _quote_on_page(quote: str, text: str) -> bool:
-    return normalize_text(quote).casefold() in normalize_text(text).casefold()
+    return restore_source_quote(text, quote) is not None
 
 
 def validate_separation(
@@ -191,6 +191,7 @@ def validate_separation(
         quote = event.get("heading_quote", "")
         if not normalize_text(quote) or not _quote_on_page(quote, page_texts[page - 1]):
             raise ValueError(f"heading quote does not occur on physical page {page}")
+        event["heading_quote"] = restore_source_quote(page_texts[page - 1], quote)
     boundary = payload.get("collection_end")
     if boundary is not None:
         if (
@@ -206,6 +207,7 @@ def validate_separation(
         quote = boundary.get("heading_quote", "")
         if not normalize_text(quote) or not _quote_on_page(quote, page_texts[page - 1]):
             raise ValueError(f"collection-end quote does not occur on physical page {page}")
+        boundary["heading_quote"] = restore_source_quote(page_texts[page - 1], quote)
 
 
 def construct_ranges(

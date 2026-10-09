@@ -4,11 +4,28 @@ import json
 from copy import deepcopy
 from typing import Any
 
+from .core import model_text
 from .schemas import IMMUTABLE_SEGMENT_FIELDS
 
 
 def compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def model_payload(value: Any) -> Any:
+    """Clean request text without mutating artifacts, identities, filenames or controlled labels."""
+    if isinstance(value, str):
+        return model_text(value)
+    if isinstance(value, list):
+        return [model_payload(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: item if key.endswith(("_id", "_ids")) or key in {
+                "filename", "file", "controlled_labels", "review_chunk_references",
+            } else model_payload(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def text_payload(chunk: dict[str, Any]) -> dict[str, str]:

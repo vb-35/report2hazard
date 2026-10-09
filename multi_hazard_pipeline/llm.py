@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from .config import LLMConfig
 from .errors import PipelineError
-from .payloads import compact_json
+from .payloads import compact_json, model_payload
 
 
 def append_timing(path: Path, record: dict[str, Any]) -> None:
@@ -133,6 +133,7 @@ class ChatClient:
             if limit is not None and (not math.isfinite(limit) or limit <= 0):
                 raise PipelineError("chat time limits must be finite and positive")
         deadline = perf_counter() + total_timeout_seconds if total_timeout_seconds is not None else None
+        user_payload = model_payload(user_payload)
         repair = None
         task = response_schema["name"] if response_schema else "unstructured_json"
         input_chars = len(compact_json(user_payload))
@@ -263,7 +264,7 @@ class ChatClient:
             "temperature": self.config.temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": compact_json(user_payload)},
+                {"role": "user", "content": compact_json(model_payload(user_payload))},
             ],
         }
         if response_schema:

@@ -6,7 +6,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from .config import TAXONOMY, PipelineConfig
-from .core import canonicalize_controlled_value, normalize_text
+from .core import canonicalize_controlled_value, normalize_text, restore_source_quote
 
 
 CONTROLLED_FIELDS = ("generalized_category", "interaction_type", "sediment_transport_phase")
@@ -337,8 +337,10 @@ def validate_segment_chain(payload: Any, source: dict[str, Any]) -> None:
             quote = normalize_text(citation["quote"])
             if chunk_id not in chunks:
                 raise ValueError(f"segment {item['segment']} cites unknown chunk {chunk_id}")
-            if quote.casefold() not in chunks[chunk_id].casefold():
+            restored = restore_source_quote(chunks[chunk_id], quote)
+            if restored is None:
                 raise CitationQuoteMismatch(item["segment"], chunk_id, quote)
+            citation["quote"] = restored
 
 
 def validate_classification_payload(payload: Any, config: PipelineConfig) -> None:

@@ -20,11 +20,13 @@ from urllib import error, request
 from multi_hazard_pipeline import human_review, llm, pipeline
 from multi_hazard_pipeline.agents.classification_agent import classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES
+from multi_hazard_pipeline.agents.segment_agent import segment_agent
 from multi_hazard_pipeline.config import DEFAULT_CONFIG
-from multi_hazard_pipeline.core import read_json
+from multi_hazard_pipeline.core import DOUBLE_QUOTE_MARKS, model_text, read_json, restore_source_quote
 from multi_hazard_pipeline.errors import PipelineError
-from multi_hazard_pipeline.payloads import compact_json
-from multi_hazard_pipeline.schemas import validate_classification_payload
+from multi_hazard_pipeline.payloads import compact_json, model_payload
+from multi_hazard_pipeline.schemas import CitationQuoteMismatch, validate_classification_payload, validate_segment_chain
+from multi_hazard_pipeline.splitter import validate_separation
 from test_regressions import SmokeClient, blocked_network
 
 
@@ -69,6 +71,80 @@ def client(root, name, **config):
 
 def timings(model):
     return [json.loads(line) for line in model.timing_path.read_text(encoding="utf-8").splitlines()]
+
+
+def check_quotation_preprocessing(root):
+    source_text = 'Material upstream of the bridge \u201eLochmure\u201c was eroded.'
+    clean_text = 'Material upstream of the bridge Lochmure was eroded.'
+    assert model_text(source_text) == clean_text
+    for mark in DOUBLE_QUOTE_MARKS:
+        text = f'Material at {mark}Lochmure{mark} was eroded.'
+        clean = model_text(text)
+        assert mark not in clean and restore_source_quote(text, clean) == text
+    preserved = "Don't change O'Connor, l\u2019eau, 12\u2033 or 3\u2032; keep \\ and \u00df."
+    assert model_text(preserved) == preserved
+    assert model_text('A 12" pipe; 3.5" diameter; 0,5" wide.') == 'A 12\u2033 pipe; 3.5\u2033 diameter; 0,5\u2033 wide.'
+    assert model_text('Labels "10", "10.5", and \u201e10\u201c.') == 'Labels 10, 10.5, and 10.'
+    assert restore_source_quote('A 12" pipe was blocked.', 'A 12\u2033 pipe was blocked.') == 'A 12" pipe was blocked.'
+    assert restore_source_quote('Bei der \u201eStra\u00dfe\u201c erodiert.', 'BEI DER STRASSE ERODIERT.') == 'Bei der \u201eStra\u00dfe\u201c erodiert.'
+    assert restore_source_quote('A \u201e\u201c B', 'A B') == 'A \u201e\u201c B'
+    assert restore_source_quote('A\u201eB\u201c and A\u00abB\u00bb', 'AB') is None
+    assert restore_source_quote(source_text, 'Invented erosion at Lochmure') is None
+    assert restore_source_quote(source_text, '""') is None
+
+    chunks = [{"chunk_id": 'source-"1', "document_id": "document-1", "filename": '\u201eReport\u201c.pdf',
+               "source_type": "pdf", "page": 1, "text": source_text,
+               "translated_text": source_text.replace('\u201e', '"').replace('\u201c', '"')}]
+    source = {"doc_id": "quotes", "chunks": chunks}
+    before = deepcopy(source)
+    answer = {"segments": [{"segment": 1, "causal_order": 1, "predecessor_segment_ids": [],
+                            "event": "Erosion", "process": clean_text,
+                            "evidence": [{"chunk_id": "c1", "quote": clean_text}]}]}
+    sent = []
+
+    def endpoint(req, **kwargs):
+        body = json.loads(req.data); sent.append(body)
+        payload = json.loads(body["messages"][1]["content"])
+        assert payload["chunks"][0]["text"] == clean_text
+        assert payload["chunks"][0]["translated_text"] == clean_text
+        assert payload["documents"][0]["filename"] == chunks[0]["filename"]
+        return Response(completion(compact_json(answer)))
+
+    with patch.object(request, "urlopen", endpoint):
+        chain = segment_agent(client(root, "quotation-segmentation"), source, DEFAULT_CONFIG)
+    assert len(sent) == 1  # Restoring punctuation must not require a semantic citation call.
+    assert chain["segments"][0]["evidence"] == [{"chunk_id": chunks[0]["chunk_id"], "quote": source_text}]
+    validate_segment_chain(chain, source)
+    assert source == before
+    invalid = deepcopy(chain); invalid["segments"][0]["evidence"][0]["quote"] = "Invented evidence"
+    with TestCase().assertRaises(CitationQuoteMismatch):
+        validate_segment_chain(invalid, source)
+
+    nested = {"previous_answer": {"rows": [{"evidence": [{"chunk_id": chunks[0]["chunk_id"], "quote": source_text}]}]},
+              "fragments": [{"fragment_id": "f1", "text": source_text}], "proposed_quote": source_text,
+              "review_chunk_references": {"c1": chunks[0]["chunk_id"]},
+              "controlled_labels": {"labels": ['A "quoted" label']}, "page_context": [[1, source_text]]}
+    original = deepcopy(nested); cleaned = model_payload(nested)
+    assert nested == original and model_payload(cleaned) == cleaned
+    assert cleaned["previous_answer"]["rows"][0]["evidence"][0] == {"chunk_id": chunks[0]["chunk_id"], "quote": clean_text}
+    assert cleaned["fragments"][0]["text"] == cleaned["proposed_quote"] == cleaned["page_context"][0][1] == clean_text
+    assert cleaned["review_chunk_references"] == nested["review_chunk_references"]
+    assert cleaned["controlled_labels"] == nested["controlled_labels"]
+
+    task = {**TASK, "user_payload": nested}
+    with (patch.object(request, "urlopen", side_effect=[Response(completion('{"ok":false}')),
+                                                       Response(completion('{"ok":true}'))]) as transport):
+        client(root, "quotation-repair").complete_json(**task, validate=validate)
+    bodies = [json.loads(call.args[0].data) for call in transport.call_args_list]
+    assert bodies[0]["messages"][:2] == bodies[1]["messages"][:2]
+    assert json.loads(bodies[0]["messages"][1]["content"]) == cleaned
+
+    separation = {"status": "pass", "events": [{"title": "Lochmure", "start_page": 1,
+                   "heading_quote": "Report Lochmure", "confidence": .99}],
+                  "collection_end": {"page": 2, "heading_quote": "Appendix Data"}, "warnings": []}
+    validate_separation(separation, ['Report \u201eLochmure\u201c', 'Appendix \u00abData\u00bb'])
+    assert separation["events"][0]["heading_quote"] == 'Report \u201eLochmure\u201c'
+    assert separation["collection_end"]["heading_quote"] == 'Appendix \u00abData\u00bb'
 
 
 def check_request_failures(root):
@@ -454,6 +530,7 @@ def main():
           patch.object(socket.socket, "connect", blocked_network),
           patch.object(socket.socket, "connect_ex", blocked_network)):
         root = Path(directory)
+        check_quotation_preprocessing(root)
         check_request_failures(root)
         check_citation_time_limits(root)
         check_repairs(root)

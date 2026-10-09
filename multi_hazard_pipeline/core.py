@@ -43,6 +43,54 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\x00", " ")).strip()
 
 
+DOUBLE_QUOTE_MARKS = '"\u00ab\u00bb\u201c\u201d\u201e\u201f\u275d\u275e\u276e\u276f\u301d\u301e\u301f\uff02'
+_REMOVE_DOUBLE_QUOTES = str.maketrans("", "", DOUBLE_QUOTE_MARKS)
+_INCH_MARK = re.compile(r'(?<![\w.,' + re.escape(DOUBLE_QUOTE_MARKS) + r'])(\d+(?:[.,]\d+)?)"(?!\w)')
+
+
+def _preserve_inch_marks(value: str) -> str:
+    # A numeric measurement delimiter must retain its unit in the model's view.
+    return _INCH_MARK.sub(r'\1' + '\u2033', value)
+
+
+def model_text(value: str) -> str:
+    """Remove quotation delimiters that can derail structured decoding; keep apostrophes and primes."""
+    return _preserve_inch_marks(value).translate(_REMOVE_DOUBLE_QUOTES)
+
+
+def restore_source_quote(text: str, quote: str) -> str | None:
+    """Resolve a model-facing quote to an original substring, rejecting ambiguous restorations."""
+    text, quote = normalize_text(text), normalize_text(quote)
+    if quote and quote.casefold() in text.casefold():
+        return quote
+    needle = normalize_text(model_text(quote)).casefold()
+    if not needle:
+        return None
+    characters, offsets = [], []
+    for index, character in enumerate(_preserve_inch_marks(text)):
+        if character in DOUBLE_QUOTE_MARKS:
+            continue
+        if character == " " and (not characters or characters[-1] == " "):
+            continue
+        for folded in character.casefold():
+            characters.append(folded)
+            offsets.append(index)
+    cleaned = "".join(characters)
+    matches: set[str] = set()
+    start = cleaned.find(needle)
+    while start >= 0:
+        left, right = offsets[start], offsets[start + len(needle) - 1] + 1
+        while left > 0 and text[left - 1] in DOUBLE_QUOTE_MARKS:
+            left -= 1
+        while right < len(text) and text[right] in DOUBLE_QUOTE_MARKS:
+            right += 1
+        matches.add(text[left:right])
+        if len(matches) > 1:
+            return None
+        start = cleaned.find(needle, start + 1)
+    return next(iter(matches), None)
+
+
 def canonicalize_controlled_value(value: Any, allowed: tuple[str, ...], aliases: dict[str, str]) -> Any:
     if not isinstance(value, str):
         return value
