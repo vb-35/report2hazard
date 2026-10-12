@@ -17,6 +17,8 @@ from unittest import TestCase
 from unittest.mock import patch
 from urllib import error, request
 
+from jsonschema import Draft202012Validator
+
 from multi_hazard_pipeline import human_review, llm, pipeline
 from multi_hazard_pipeline.agents.classification_agent import classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES
@@ -438,6 +440,61 @@ def check_classification_repairs(root):
         assert endpoint.call_count == 3
 
 
+def check_classification_coverage(root):
+    # Reproduce a 12-segment request answered with only segment 1, then a complete repair.
+    ids = list(range(1, 13))
+    segments = {"doc_id": "coverage", "segments": [
+        {"segment": number, "causal_order": number, "predecessor_segment_ids": [], "event": "Flood",
+         "process": f"Sediment moved at site {number}.",
+         "evidence": [{"chunk_id": f"source-{number}", "quote": f"Sediment moved at site {number}."}]}
+        for number in ids
+    ]}
+    valid = {"rows": [
+        {"segment": number, "generalized_category": "Sediment Surge",
+         "interaction_type": "Process-process", "sediment_transport_phase": "Transportation",
+         "classification_rationale": ["Sediment moved downstream."]}
+        for number in ids
+    ]}
+    partial = {"rows": valid["rows"][:1]}
+    before = deepcopy(segments)
+    model = client(root, "classification-coverage")
+    with patch.object(request, "urlopen", side_effect=[Response(completion(compact_json(partial))),
+                                                       Response(completion(compact_json(valid)))]) as endpoint:
+        result = classification_agent(model, segments, DEFAULT_CONFIG)
+    assert segments == before and [row["segment"] for row in result["rows"]] == ids
+    bodies = [json.loads(call.args[0].data) for call in endpoint.call_args_list]
+    assert json.loads(bodies[0]["messages"][1]["content"])["requested_segment_ids"] == ids
+    schema = bodies[0]["response_format"]["json_schema"]["schema"]
+    rows_schema = schema["properties"]["rows"]
+    assert rows_schema["minItems"] == rows_schema["maxItems"] == 12
+    assert rows_schema["items"]["properties"]["segment"]["enum"] == ids
+    assert Draft202012Validator(schema).is_valid(valid)
+    assert not Draft202012Validator(schema).is_valid(partial)
+    assert bodies[1]["response_format"] == bodies[0]["response_format"]
+    assert "missing=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]" in bodies[1]["messages"][-1]["content"]
+    assert [row["outcome"] for row in timings(model)] == ["validation_error", "pass"]
+
+    # Targeted calls use permanent, potentially nonconsecutive IDs and retain unaffected rows.
+    segments["segments"][-1]["segment"] = 19
+    result["rows"][-1]["segment"] = 19
+    targeted = {"rows": [valid["rows"][1], valid["rows"][6]]}
+    model = client(root, "classification-targeted-coverage")
+    with patch.object(request, "urlopen", return_value=Response(completion(compact_json(targeted)))) as endpoint:
+        revised = classification_agent(model, segments, DEFAULT_CONFIG, segment_ids=[2, 7], existing=result)
+    assert revised == result
+    body = json.loads(endpoint.call_args.args[0].data)
+    rows_schema = body["response_format"]["json_schema"]["schema"]["properties"]["rows"]
+    assert rows_schema["minItems"] == rows_schema["maxItems"] == 2
+    assert rows_schema["items"]["properties"]["segment"]["enum"] == [2, 7]
+
+    # A provider ignoring schema constraints must still fail closed after the existing attempt budget.
+    model = client(root, "classification-coverage-limit")
+    with patch.object(request, "urlopen", return_value=Response(completion(compact_json(partial)))) as endpoint:
+        with TestCase().assertRaisesRegex(PipelineError, "validation_error.*3 attempt.*coverage mismatch"):
+            classification_agent(model, segments, DEFAULT_CONFIG)
+        assert endpoint.call_count == 3
+
+
 def check_parsing_and_partial_output(root):
     malformed = '{"ok":tru'
     partial = completion('{"ok":true}')
@@ -535,6 +592,7 @@ def main():
         check_citation_time_limits(root)
         check_repairs(root)
         check_classification_repairs(root)
+        check_classification_coverage(root)
         check_parsing_and_partial_output(root)
         check_human_timing_and_failed_save(root)
     print("Offline LLM checks passed: permanent/transient failures, bounded retries, repair context/size, usage, timing and save gates.")

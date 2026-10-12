@@ -24,8 +24,9 @@ commentary, or revisions after it. Each row must have exactly these keys:
 {{"rows":[{{"segment":1,"generalized_category":"...","interaction_type":"...",
 "sediment_transport_phase":"...","classification_rationale":["..."]}}]}}.
 Copy the integer "segment" from the supplied step; the field is "segment", never "segment_id".
-For ordinary calls return
-one row per supplied segment; correction calls follow requested_segment_ids and the correction rules below. For each result,
+For ordinary calls return exactly one row for EVERY requested_segment_ids entry, in supplied order.
+Never stop after the first segment or merge several segments into one classification.
+Correction calls follow requested_segment_ids and the correction rules below. For each result,
 return only its segment ID, generalized_category, interaction_type, sediment_transport_phase, and a short
 classification_rationale list. Python retains the original causal order, event, process, and evidence unchanged.
 
@@ -126,19 +127,23 @@ def classification_agent(
 
     correction = correction_payload(previous_source or source or {"chunks": []}, {"rows": existing_rows}, review_issues) if review_issues else {}
     references = {citation["chunk_id"]: citation["chunk_id"] for item in segments["segments"] for citation in item["evidence"]}
+    response_schema = classification_response_schema(config)
+    rows_schema = response_schema["schema"]["properties"]["rows"]
+    rows_schema.update(minItems=len(requested), maxItems=len(source_by_id) if review_issues else len(requested))
+    rows_schema["items"]["properties"]["segment"]["enum"] = list(source_by_id) if review_issues else requested
 
     payload = client.complete_json(
         system_prompt=_classification_prompt(config),
         user_payload={
             "segments": segment_payload(segments["segments"] if review_issues else requested_segments,
                                         references=references if review_issues else None),
+            "requested_segment_ids": requested,
             **correction,
-            **({"requested_segment_ids": requested,
-                "source": source_payload(source["chunks"], permanent_ids=True)[0] if source else None} if review_issues else {}),
+            **({"source": source_payload(source["chunks"], permanent_ids=True)[0] if source else None} if review_issues else {}),
             "correction_instruction": normalize_text(correction_instruction or "") or None,
         },
         validate=validate,
-        response_schema=classification_response_schema(config),
+        response_schema=response_schema,
     )
     replacements = {
         row["segment"]: _normalize_classified_row(row, source_by_id[row["segment"]], config)

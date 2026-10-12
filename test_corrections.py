@@ -223,6 +223,9 @@ def check_chain_operations_and_fallback(source, translated, previous_answer, iss
         def complete_json(self, **kwargs):
             assert kwargs["user_payload"]["requested_segment_ids"] == [1]
             assert len(kwargs["user_payload"]["segments"]) == 3
+            rows_schema = kwargs["response_schema"]["schema"]["properties"]["rows"]
+            assert rows_schema["minItems"] == 1 and rows_schema["maxItems"] == 3
+            assert rows_schema["items"]["properties"]["segment"]["enum"] == [1, 2, 3]
             result = {"rows": [labels(1), labels(2, corrected=True)]}
             kwargs["validate"](result)
             return result
