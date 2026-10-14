@@ -178,3 +178,7 @@ All local outputs belong in `results/`, which is excluded by `.gitignore`. The l
 The smoke check uses synthetic inputs and temporary outputs. `check_example.py` is an optional local integration check requiring `results/inputs/tmp_single_input/Schnannerbach_extract1.docx` and a live API key; it replaces `results/example_check` when run.
 
 Processing requires `TW_LLM_API_BASE_URL` and `TW_LLM_API_KEY` in the environment before starting the application. Use a compatible chat-completions service; the client appends `/chat/completions` to the base URL. Configure the model in `multi_hazard_pipeline/config.py`. 
+
+## GIS placement of segments (`segment_mapping`)
+
+The [segment_mapping](segment_mapping/README.md) toolkit places approved segments on a map: report inspection, data download (any region; Land Tirol preset), terrain models, figure georeferencing, shapefile + evidence CSV, interactive map, report and reviewer ZIP. All run-specific decisions are data in `scripts/placements.json` ([SPEC.md](segment_mapping/SPEC.md)), so a model following `mapping_prompt_toolkit.txt` never writes code. Tests: `python -m pytest test_segment_mapping.py`.

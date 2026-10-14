@@ -4,3 +4,16 @@ pypdf
 jsonschema
 Flask
 lingua-language-detector==2.1.1
+
+# GIS / segment localization
+geopandas
+shapely
+pyproj
+rasterio
+numpy
+scipy
+folium
+matplotlib  # QA/diagnostic plots for segment localization
+requests  # downloads (Overpass, Land Tirol ArcGIS REST / WCS)
+pypdfium2  # report page renders (segment_mapping)
+Pillow  # figure crops, colour digitizing (segment_mapping)

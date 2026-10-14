@@ -26,6 +26,8 @@ Thumbs.db
 /results/
 /artifacts*/
 /outputs/
+/output/
+/seigesbach_localization/
 /tmp/
 /tmp_single_input/
 /FAI/
@@ -33,3 +35,6 @@ Thumbs.db
 /Translation resources/*.pdf
 /*.traineddata
 /multi-agent-first-draft.md
+
+# Worked mapping answer keys must never sit where evaluated models can read them
+/tests/fixtures/*placements*.json
