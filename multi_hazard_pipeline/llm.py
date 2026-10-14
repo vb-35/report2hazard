@@ -272,6 +272,8 @@ class ChatClient:
         }
         if response_schema:
             payload["response_format"] = {"type": "json_schema", "json_schema": response_schema}
+        if self.config.max_output_tokens:
+            payload["max_tokens"] = self.config.max_output_tokens
         if self.config.reasoning_effort is not None:
             payload["reasoning_effort"] = self.config.reasoning_effort
         body = compact_json(payload)

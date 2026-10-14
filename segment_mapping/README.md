@@ -46,6 +46,9 @@ Use the project environment: `.venv\Scripts\python.exe -m segment_mapping ...` f
 | | `config RUN --bbox x0,y0,x1,y1 \| --bbox-wgs84 ... \| --bbox-from LAYER --margin 1000 [--detail-bbox ...]` | Working area. The detail bbox is used for OSM, the fine DEM and orthophotos. |
 | 4. Data | `inventory RUN` | Rule-2 list of what is present and missing (`data_raw/inventory.md`). |
 | | `import RUN FILE --name NAME --role ROLE` | Any provided local vector/raster (one copy in the run CRS; rasters in the same CRS are not resampled). |
+| | `import-package RUN package.json` · `export-package RUN OUT_DIR` | Import or write a spatial package (see below). |
+| | `import-text RUN --pipeline-run DIR` | Use the report text (original + English) of a pipeline run instead of parsing the PDF (no figures). |
+| | `facts RUN` | Candidate features with short ids (S#, C#, B#, R#, P#, K#), name mentions, stream/catchment facts (`data_raw/facts.json`). |
 | | `fetch RUN preset tirol [--only vector,dem,ortho,osm] [--skip ...]` | Region preset (`presets` lists them). |
 | | `fetch RUN osm` · `fetch RUN dem-global` | Anywhere: OpenStreetMap (Overpass with fallback to the OSM API); Copernicus GLO-30 DEM. |
 | | `fetch RUN arcgis --url ... [--layer-name ...] --name N [--where SQL]` · `wfs` · `wcs` · `image --type arcgis_export\|wms` · `file --url URL_OR_PATH` | Any official service found online. Add `--provider --licence --licence-url --use --role`. Prefer `fetch arcgis` for ArcGIS layers: it pages through all features. `fetch file` with a REST `query` URL gets at most the server's record limit (a warning is printed when truncated). |
@@ -61,6 +64,41 @@ Use the project environment: `.venv\Scripts\python.exe -m segment_mapping ...` f
 | | `validate RUN`, `serve RUN` | Re-validate; serve `outputs/` for a manual browser check. |
 
 Every command is appended to `scripts/commands.log`. Together with `placements.json`, this makes the run reproducible and lists it in the report.
+
+## Text-only localization from the pipeline (constrained orchestration)
+
+For a model without vision or tools (e.g. the pipeline's own LLM), the pipeline drives the toolkit itself:
+
+```
+python -m multi_hazard_pipeline localize RESULTS_RUN_DIR --package package.json [--segments-table T.tsv] [--only 3,4] [--no-review]
+```
+
+- It runs only on **approved** runs and writes everything to `RESULTS_RUN_DIR/localization/`, a normal toolkit run folder. A `localization` block is added to the run manifest.
+- The model makes small, schema-checked choices:
+  - one frame call: main stream, catchment, named features, hm anchors;
+  - one call per segment: methods from a fixed menu with candidate ids and parameters;
+  - repair calls when needed, and an optional self-review.
+- Code builds every geometry and decides the placement class. It applies rule 5d and verifies quotations.
+- Design: [LOCALIZATION_STAGE_DESIGN.md](LOCALIZATION_STAGE_DESIGN.md).
+
+## Spatial package
+
+The package is a folder with `package.json` plus the data files. It declares each layer's role and fields, so name matching works in any region:
+
+```json
+{"name": "...", "crs": "EPSG:31254",
+ "layers": [{"name": "streams", "path": "streams.gpkg", "role": "streams", "name_field": "GEW_NAME_HAUPT", "id_field": "HZB_GEW"}, ...],
+ "rasters": [{"name": "dem", "path": "dem.tif", "role": "dem"}],
+ "sources": [{"name": "streams", "provider": "...", "licence": "...", "date": "..."}]}
+```
+
+- **Required roles:** `catchment`, `streams`, `dem`.
+- **Useful roles:** `roads` (`ref_field` for road codes such as L13), `road_km` (`value_field`), `bridges`, `buildings`, `names`, `road_land`.
+- **Building a package:** `export-package` writes one from any run, e.g. one filled once with `fetch preset tirol`.
+
+## Map
+
+`segments_map.html` is self-contained: Leaflet 1.9.4 (BSD-2, `vendor/leaflet/`) and all data are embedded, and a hillshade from the run DEM is included. It works offline. Web base maps from the preset are optional layers. Set `"offline_map": true` in `run.json` to open on the hillshade; text-only runs do this by default.
 
 ## Run folder
 

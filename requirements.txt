@@ -12,7 +12,6 @@ pyproj
 rasterio
 numpy
 scipy
-folium
 matplotlib  # QA/diagnostic plots (segment_mapping)
 requests  # downloads (Overpass, Land Tirol ArcGIS REST / WCS)
 pypdfium2  # report page renders (segment_mapping)

@@ -43,6 +43,15 @@ def parser() -> argparse.ArgumentParser:
     )
     correct.add_argument("--segments", default="", help="comma-separated segment IDs")
     correct.add_argument("--comment", default="")
+    localize = subcommands.add_parser("localize", help="place the segments of an approved run on a map (text-only, constrained)")
+    localize.add_argument("artifact_dir")
+    localize.add_argument("--package", required=True, help="spatial package JSON (layers, rasters, roles, name fields)")
+    localize.add_argument("--segments-table", help="TSV/CSV segment table to map instead of the approved rows")
+    localize.add_argument("--only", default="", help="comma-separated segment IDs (partial run, for testing)")
+    localize.add_argument("--no-review", action="store_true", help="skip the self-review call")
+    localize.add_argument("--no-browser", action="store_true", help="skip the headless browser map check")
+    localize.add_argument("--max-output-tokens", type=int, default=24000,
+                          help="cap on generated tokens per model call (reasoning included); ends runaway generations")
     serve = subcommands.add_parser("serve", help="start the local human-review interface")
     serve.add_argument("output_dir", nargs="?", default="results")
     serve.add_argument("--host", default="127.0.0.1")
@@ -52,7 +61,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
-    if len(raw) == 2 and raw[0] not in {"run", "split", "approve", "reject", "correct", "serve"}:
+    if len(raw) == 2 and raw[0] not in {"run", "split", "approve", "reject", "correct", "serve", "localize"}:
         raw = ["run", *raw]
     args = parser().parse_args(raw)
     if args.command == "run":
@@ -82,6 +91,22 @@ def main(argv: list[str] | None = None) -> int:
             segment_ids=segment_ids,
             global_comment=args.comment,
         )
+    elif args.command == "localize":
+        from .agents.localization_agent import localize_run
+
+        only = [s.strip() for s in args.only.split(",") if s.strip()] or None
+        try:
+            result = localize_run(args.artifact_dir, args.package, segments_table=args.segments_table, only=only,
+                                  review=not args.no_review, browser_check=not args.no_browser,
+                                  max_output_tokens=args.max_output_tokens)
+        except Exception as exc:
+            print(f"localization failed: {exc}", file=sys.stderr)
+            return 1
+        summary = {k: result.get(k) for k in ("status", "model_calls", "correction_rounds", "outputs", "report", "zip")}
+        summary["build_errors"] = (result.get("build") or {}).get("errors")
+        summary["review_issues"] = len((result.get("review") or {}).get("issues", []))
+        print(json.dumps(summary, indent=2, ensure_ascii=True))
+        return 0 if result.get("status") == "delivered" else 1
     else:
         from .web import create_app
 

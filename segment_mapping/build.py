@@ -140,7 +140,8 @@ def table_ledger(run: Run, spec: dict) -> list[dict]:
 # ============================================================================ validation
 
 
-def classify_issues(part: dict, built: dict, visuals: dict, tables: dict, georefs: dict) -> tuple[list[str], list[str]]:
+def classify_issues(part: dict, built: dict, visuals: dict, tables: dict, georefs: dict,
+                    text_mode: bool = False) -> tuple[list[str], list[str]]:
     errors, warns = [], []
     pid = part.get("part_id", "?")
     E = lambda m: errors.append(f"{pid}: {m}")
@@ -172,6 +173,8 @@ def classify_issues(part: dict, built: dict, visuals: dict, tables: dict, georef
             E("rule_5d needs parameter.value and sensitivity values both lower and higher than it")
         if (part.get("parameter") or {}).get("fit_area_ha"):
             E("rule_5d applies when the report gives no extent constraint; a fitted area contradicts that")
+    if text_mode and pl == "documented":
+        E("text-only run: no figure was inspected, so no outline is documented; use approximate/modelled/hypothesis")
     if pl == "documented" and not (part.get("georef") or part.get("figures")):
         W("documented placement without a georef/figure reference: is the outline really explicit in the report?")
     if pl == "documented" and (part.get("parameter") or {}).get("fit_area_ha"):
@@ -206,7 +209,7 @@ KNOWN_KEYS = {
     "part": {"part_id", "seg_id", "part_label", "geometry", "parameter", "placement", "is_hypo", "confidence", "rule_5d", "evidence_type",
              "figures", "georef", "tables", "quotes", "visual_notes", "image_date_relevance", "visual_identification_method",
              "georeferencing_limitations", "geom_basis", "data_src", "rep_value", "rep_page", "reasoning", "uncertainty", "alternatives",
-             "reason_placement", "reason_is_hypo", "reason_confidence", "fit_from", "checks", "comment"},
+             "reason_placement", "reason_is_hypo", "reason_confidence", "fit_from", "checks", "comment", "method", "method_args"},
     "parameter": {"name", "unit", "value", "fit_area_ha", "bounds", "tolerance_pct", "sensitivity"},
     "check": {"label", "measure", "report_value", "report_text", "page", "kind", "note"},
     "data_gap": {"searched", "result", "effect"},
@@ -323,7 +326,7 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
             errors.append(f"{pid}: geometry failed: {exc}")
             continue
         built["quotes"] = [resolve_quote(run, q) for q in part.get("quotes", [])]
-        e1, w1 = classify_issues(part, built, visuals, tables, georefs)
+        e1, w1 = classify_issues(part, built, visuals, tables, georefs, run.config.get("mode") == "text")
         errors += e1
         warns += w1
         checks = []

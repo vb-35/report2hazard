@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 
-from .runctx import Run, parse_segment_table, today, utf8_stdout
+from .runctx import Run, parse_segment_table, today, utf8_stdout, write_json
 
 
 def _nums(s: str | None):
@@ -159,6 +159,43 @@ def cmd_prompt(a):
         print(out)
     print("Reminder: for a blind run, keep worked answers for this report (earlier run folders, answer keys) out of "
           f"{project}.", file=sys.stderr)
+
+
+def cmd_import_package(a):
+    from .package import import_package
+
+    run = Run(a.run)
+    run.ensure_dirs()
+    _print(import_package(run, a.package))
+
+
+def cmd_export_package(a):
+    from .package import export_package
+
+    print(export_package(Run(a.run), a.out, a.name or ""))
+
+
+def cmd_import_text(a):
+    from .report import import_text, pages_from_pipeline
+
+    run = Run(a.run)
+    if a.pipeline_run:
+        pages = pages_from_pipeline(a.pipeline_run)
+    else:
+        pages = json.loads(Path(a.json).read_text(encoding="utf-8"))
+    _print(import_text(run, pages))
+
+
+def cmd_facts(a):
+    from .facts import Facts
+
+    run = Run(a.run)
+    f = Facts(run, _spec_or_empty(run)).build()
+    write_json(run.raw / "facts.json", f)
+    for c in f["candidates"]:
+        print(f"{c['id']:<4} {c.get('description', '')[:220]}")
+    print("Unresolved quoted names:", f["unresolved_quoted_names"])
+    print(f"{len(f['numeric_clues'])} numeric clues; full facts in data_raw/facts.json")
 
 
 def cmd_config(a):
@@ -489,6 +526,16 @@ def build_parser():
     s.add_argument("--catchment", help="provided catchment outline file")
     s.add_argument("--catchment-info", help="catchment name/code/area and other information")
     s.add_argument("--out", help="write the prompt to this file")
+    s = add("import-package", cmd_import_package, "import a spatial package (package.json with layers, rasters, roles, name fields)")
+    s.add_argument("package")
+    s = add("export-package", cmd_export_package, "write the run's data as a reusable spatial package")
+    s.add_argument("out", help="output folder")
+    s.add_argument("--name")
+    s = add("import-text", cmd_import_text, "use report text from a pipeline run (or a JSON page list) instead of the PDF")
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--pipeline-run", help="multi_hazard_pipeline run folder (translated.json)")
+    g.add_argument("--json", help="JSON list of pages: {text, translated_text?, file?, page?}")
+    add("facts", cmd_facts, "candidate features with ids, name mentions, stream/catchment facts (for constrained localization)")
     s = add("config", cmd_config, "show/change run settings (bbox, CRS, page offset, preset)")
     cfg_opts(s)
     s = add("report", cmd_report, "extract text, tables, captions, figures and page renders from the report")

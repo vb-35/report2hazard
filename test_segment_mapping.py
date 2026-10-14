@@ -207,7 +207,11 @@ class BuildDeliverTests(TestCase):
         for heading in ("## Data found and used", "## Checks", "## Visual evidence used", "## Sensitivity", "## Uncertain interpretations"):
             self.assertIn(heading, rep)
         html = (self.tmp / "outputs/segments_map.html").read_text(encoding="utf-8")
-        self.assertEqual(html.count('"dashArray": "8 6"'), 1)
+        from segment_mapping.webmap import embedded_counts
+
+        counts = embedded_counts(html)
+        self.assertEqual((counts["parts"], counts["hypotheses"], counts["leaflet_inlined"]), (4, 1, True))
+        self.assertNotIn("cdn.jsdelivr", html)  # works offline
 
     def test_rule_violations_are_errors(self):
         spec = _spec()

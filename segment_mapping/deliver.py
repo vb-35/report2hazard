@@ -16,12 +16,10 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .build import SHP_FIELDS
+from .build import SHP_FIELDS, _shp_text
 from .geom import Evaluator
-from .runctx import ESRI_IMAGERY, OSM_BASEMAP, Run, read_json, today, write_json
+from .runctx import Run, read_json, today, write_json
 
-COLORS = ["#1b9e77", "#7570b3", "#e7298a", "#d95f02", "#1f78b4", "#b2182b", "#17a2b8", "#6a3d9a", "#b8860b", "#2ca02c",
-          "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#ff7f0e"]
 ZIP_FILES = ["segments.shp", "segments.shx", "segments.dbf", "segments.prj", "segments.cpg", "segments_evidence.csv",
              "segments_map.html", "README.md"]
 FIELD_HELP = {
@@ -121,91 +119,26 @@ def _popup_html(e: dict) -> str:
 
 
 def make_map(run: Run) -> Path:
-    import folium
-    import geopandas as gpd
-    from branca.element import Element
+    from .webmap import build_map_data, write_map
 
     spec = run.spec()
-    gdf = gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
-    ev = {e["part_id"]: e for e in _load_evidence(run)}
-    web = gdf.copy()
-    web["geometry"] = web.geometry.simplify(0.3)
-    web = web.to_crs(4326)
-    b = web.total_bounds
-    m = folium.Map(location=[(b[1] + b[3]) / 2, (b[0] + b[2]) / 2], zoom_start=13, tiles=None, control_scale=True)
-    basemaps = run.config.get("basemaps") or [OSM_BASEMAP, ESRI_IMAGERY]
-    for i, bm in enumerate(basemaps):
-        if bm["url"] == "OpenStreetMap":
-            folium.TileLayer("OpenStreetMap", name=bm["name"], show=i == 0).add_to(m)
-        elif bm.get("type") == "wms":
-            folium.WmsTileLayer(bm["url"], layers=bm["layers"], fmt=bm.get("format", "image/png"), transparent=True, name=bm["name"],
-                                attr=bm["attr"], overlay=True, show=False, opacity=bm.get("opacity", 0.6)).add_to(m)
-        else:
-            folium.TileLayer(bm["url"], name=bm["name"], attr=bm["attr"], max_zoom=bm.get("max_zoom", 19), show=i == 0).add_to(m)
-    if not any(bm["url"] == "OpenStreetMap" for bm in basemaps):
-        folium.TileLayer("OpenStreetMap", name="OpenStreetMap", show=False).add_to(m)
-
+    context, ticks = [], []
     ctx_items = (spec.get("map") or {}).get("context", [])
-    if ctx_items:
+    tick_cfg = (spec.get("map") or {}).get("chainage_ticks")
+    if ctx_items or tick_cfg:
         evl = Evaluator(run, spec)
-        grp = folium.FeatureGroup(name="Context (reference features, not event outlines)", show=True)
         for c in ctx_items:
             try:
-                g = evl.geom(c["geom"])
+                context.append((c.get("label", ""), evl.geom(c["geom"]), c.get("color", "#444")))
             except Exception as exc:
                 print(f"map context {c.get('label')}: {exc}")
-                continue
-            gj = gpd.GeoSeries([g], crs=run.crs).to_crs(4326).__geo_interface__
-            col = c.get("color", "#444")
-            folium.GeoJson(gj, style_function=lambda f, col=col: dict(color=col, weight=1.5, fillOpacity=0, dashArray=None),
-                           tooltip=c.get("label", "")).add_to(grp)
-        ticks = (spec.get("map") or {}).get("chainage_ticks")
-        if ticks:
-            ch = evl.chainage(ticks["chainage"])
-            vals = ticks.get("values") or list(np.arange(0, ch.value(ch.line.length) + 1e-9, ticks.get("every", 1)))
-            from pyproj import Transformer
-
-            t = Transformer.from_crs(run.crs, 4326, always_xy=True)
+        if tick_cfg:
+            ch = evl.chainage(tick_cfg["chainage"])
+            vals = tick_cfg.get("values") or list(np.arange(0, ch.value(ch.line.length) + 1e-9, tick_cfg.get("every", 1)))
             for v in vals:
-                p = ch.line.interpolate(min(ch.raw(float(v)), ch.line.length))
-                lon, lat = t.transform(p.x, p.y)
-                folium.CircleMarker([lat, lon], radius=3, color="black", fill=True, fill_opacity=1,
-                                    tooltip=f"{ticks['chainage']} {float(v):g}").add_to(grp)
-        grp.add_to(m)
-
-    seg_order = [s["seg_id"] for s in run.segments]
-    web["_area"] = web.area_ha.astype(float)
-    for i, sid in enumerate(seg_order):
-        sub = web[web.seg_id.astype(str) == sid].sort_values("_area", ascending=False)
-        if sub.empty:
-            continue
-        col = COLORS[i % len(COLORS)]
-        fg = folium.FeatureGroup(name=f"{sid}: {run.segment(sid)['process'].strip()[:70]}", show=True)
-        for _, r in sub.iterrows():
-            e = ev[r.part_id]
-            hyp = int(r.is_hypo) == 1
-            style = dict(color=col, weight=2.4, fillColor=col, fillOpacity=0.08 if r._area > 50 else 0.28,
-                         dashArray="8 6" if hyp else None)
-            folium.GeoJson(r.geometry.__geo_interface__, style_function=lambda f, s=style: s,
-                           highlight_function=lambda f: dict(weight=4, fillOpacity=0.45),
-                           tooltip=f"{r.part_id} | {r.placement} | {r.confidence}{' | HYPOTHESIS' if hyp else ''} | {r.part_label}",
-                           popup=folium.Popup(_popup_html(e), max_width=620)).add_to(fg)
-        fg.add_to(m)
-    folium.LayerControl(collapsed=False).add_to(m)
-    css = ("<style>.pp{font:12px sans-serif;max-height:460px;overflow-y:auto}.pp table.attr th{text-align:left;vertical-align:top;"
-           "padding-right:6px}.pp p{margin:6px 0}</style>")
-    legend = (f"<div style='position:fixed;left:10px;bottom:24px;z-index:9999;background:white;padding:8px 10px;border:1px solid #777;"
-              f"font:12px sans-serif;max-width:340px'><b>{html.escape(spec.get('event') or run.config.get('event', ''))}</b><br>"
-              "Solid outline: place identified (is_hypo 0)<br>Dashed outline: hypothesis to check (is_hypo 1)<br>"
-              "Click a polygon for attributes, quotations, visual observations, reasoning and uncertainty.<br>"
-              + "".join(f"<span style='display:inline-block;width:11px;height:11px;background:{COLORS[i % len(COLORS)]};margin-right:4px'></span>{html.escape(s)} "
-                        for i, s in enumerate(seg_order)) + "</div>")
-    m.get_root().header.add_child(Element(css))
-    m.get_root().html.add_child(Element(legend))
-    m.fit_bounds([[b[1], b[0]], [b[3], b[2]]])
-    target = run.out / "segments_map.html"
-    m.save(target)
-    return target
+                ticks.append((f"{tick_cfg['chainage']} {float(v):g}", ch.line.interpolate(min(ch.raw(float(v)), ch.line.length))))
+    data = build_map_data(run, _popup_html, spec.get("event") or run.config.get("event", ""), context, ticks)
+    return write_map(run, data)
 
 
 def _browser() -> str | None:
@@ -231,8 +164,9 @@ def check_map(run: Run, wait_ms: int = 20000) -> dict:
     gdf = gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
     expected = dict(parts=len(gdf), hypotheses=int((gdf.is_hypo == 1).sum()), segments=gdf.seg_id.nunique())
     text = page.read_text(encoding="utf-8")
-    static = dict(feature_groups=len(re.findall(r"L\.featureGroup\(", text)), popups=len(re.findall(r"L\.popup\(", text)),
-                  dashed_styles=len(re.findall(r'"dashArray": "8 6"', text)))
+    from .webmap import embedded_counts
+
+    static = embedded_counts(text)
     res = dict(date=today(), file=str(page), expected=expected, static=static)
     exe = _browser()
     if not exe:
@@ -252,7 +186,7 @@ def check_map(run: Run, wait_ms: int = 20000) -> dict:
             res["loads"] = bool(res["leaflet_container"] and res["interactive_paths"] >= expected["parts"])
             res["dashed_ok"] = res["dashed_paths"] >= expected["hypotheses"]
             if res["tiles_loaded"] == 0:
-                res["tiles_note"] = "No base-map tile loaded in headless mode (offline or blocked); geometry layers still render."
+                res["tiles_note"] = "No web base-map tile loaded (offline mode, offline machine or blocked); the map itself renders."
         except Exception as exc:
             res["browser_error"] = str(exc)
         finally:
@@ -304,7 +238,7 @@ def validate(run: Run) -> dict:
     for s in run.segments:
         sub = g[g.seg_id.astype(str) == s["seg_id"]]
         for col, key in (("process", "process"), ("category", "category"), ("interact", "interact"), ("phase", "phase")):
-            if len(sub) and not (sub[col].astype(str).str.rstrip() == s[key].rstrip()[:254]).all():
+            if len(sub) and not (sub[col].astype(str).str.rstrip() == _shp_text(s[key]).rstrip()).all():
                 errs.append(f"segment {s['seg_id']}: {col} differs from the input table")
     for e in ev:
         if e["rule_5d"] == "1":
@@ -392,7 +326,11 @@ def write_report(run: Run, validation: dict, map_check: dict | None) -> Path:
          f"Report: `{run.report_path.name}` ({len(run.pages())} PDF pages; printed page = PDF page + {run.page_offset}). "
          f"CRS: {run.crs} {_crs_name(run)}. Built {today()} with segment_mapping {__version__}.", "",
          f"**{len(g)} polygon parts cover {g.seg_id.nunique()} of {len(run.segments)} segments; {int((g.is_hypo == 1).sum())} parts are hypotheses (is_hypo = 1).** "
-         "Overlaps between parts are intentional.", ""] + N("summary")
+         "Overlaps between parts are intentional.", ""]
+    if run.config.get("mode") == "text":
+        L += ["**Text-only run:** placements use the report text and provided spatial data only. Figures, maps and photographs were "
+              "not inspected (known only from captions), so no report outline was digitized and no part is `documented`.", ""]
+    L += N("summary")
 
     inv = run.raw / "inventory.md"
     L += ["## Spatial data before placement (rule 2)", "", inv.read_text(encoding="utf-8").split("\n", 1)[-1].strip() if inv.exists() else "Inventory not generated.", ""]
@@ -491,7 +429,7 @@ def _packages() -> str:
     from importlib.metadata import PackageNotFoundError, version
 
     out = []
-    for p in ("geopandas", "pyogrio", "shapely", "pyproj", "rasterio", "numpy", "scipy", "folium", "pypdf", "pdfplumber", "pypdfium2", "matplotlib", "requests"):
+    for p in ("geopandas", "pyogrio", "shapely", "pyproj", "rasterio", "numpy", "scipy", "pypdf", "pdfplumber", "pypdfium2", "matplotlib", "requests"):
         try:
             out.append(f"{p} {version(p)}")
         except PackageNotFoundError:

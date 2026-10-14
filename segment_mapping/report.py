@@ -241,16 +241,26 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _soft(text: str) -> str:
+    """Remove soft line-break hyphens kept as 'Zubrin- ger' in already re-flowed text."""
+    return re.sub(r"(?<=[^\W\d_])-\s+(?=[a-zäöüßàâçéèêëîïôûù])", "", text)
+
+
+def _squash(text: str) -> str:
+    """Matching key: no whitespace and no double-quote marks (LLM clients often strip quote marks from text)."""
+    return re.sub(r'[\s"]+', "", text)
+
+
 class _Compact:
-    """Whitespace-free view of a normalized string with index mapping back to it."""
+    """Whitespace- and quote-mark-free view of a normalized string with index mapping back to it."""
 
     def __init__(self, norm: str):
         self.norm = norm
-        self.pos = [i for i, c in enumerate(norm) if not c.isspace()]
+        self.pos = [i for i, c in enumerate(norm) if not c.isspace() and c != '"']
         self.s = "".join(norm[i] for i in self.pos)
 
     def find(self, needle: str, start: int = 0) -> int:
-        return self.s.find(re.sub(r"\s+", "", _normalize(needle)), start)
+        return self.s.find(_squash(_normalize(needle)), start)
 
     def slice(self, a: int, b: int) -> str:
         return self.norm[self.pos[a] : self.pos[b - 1] + 1]
@@ -278,7 +288,8 @@ def _page_views(run: Run):
     if cache is None:
         pages = run.pages()
         boiler = _boilerplate(pages)
-        cache = [(p, _Compact(_normalize(p["text"])), _normalize(_strip_boilerplate(p["text"], boiler))) for p in pages]
+        cache = [(p, _Compact(_normalize(p["text"])), _normalize(_strip_boilerplate(p["text"], boiler)),
+                  _Compact(_soft(_normalize(p["text"])))) for p in pages]
         run._page_views = cache
     return cache
 
@@ -299,13 +310,14 @@ def resolve_quote(run: Run, q: dict | str) -> dict:
     elif q.get("printed_page"):
         want = run.pdf_page(int(q["printed_page"]))
 
-    def locate(view: _Compact):
+    def locate(view: _Compact, soft: bool = False):
+        prep = (lambda t: _soft(_normalize(t))) if soft else _normalize
         if q.get("text"):
-            needle = re.sub(r"\s+", "", _normalize(q["text"]))
+            needle = _squash(prep(q["text"]))
             a = view.s.find(needle)
             return (a, a + len(needle)) if a >= 0 and needle else None
-        sa = re.sub(r"\s+", "", _normalize(q["start"]))
-        se = re.sub(r"\s+", "", _normalize(q["end"]))
+        sa = _squash(prep(q["start"]))
+        se = _squash(prep(q["end"]))
         a = view.s.find(sa)
         if a < 0:
             return None
@@ -313,17 +325,19 @@ def resolve_quote(run: Run, q: dict | str) -> dict:
         return (a, e + len(se)) if e >= 0 else None
 
     order = [v for v in views if want is None or v[0]["pdf_page"] == want] + [v for v in views if want is not None and v[0]["pdf_page"] != want]
-    for p, view, _ in order:
-        span = locate(view)
-        if span:
-            return dict(text=view.slice(*span), pdf_page=p["pdf_page"], printed_page=p["printed_page"], verified=True,
-                        page_hint_ok=(want is None or p["pdf_page"] == want))
+    for soft in (False, True):
+        for p, view, _, softview in order:
+            v = softview if soft else view
+            span = locate(v, soft)
+            if span:
+                return dict(text=v.slice(*span), pdf_page=p["pdf_page"], printed_page=p["printed_page"], verified=True,
+                            page_hint_ok=(want is None or p["pdf_page"] == want))
     # quotations crossing a page break (running headers/footers removed)
-    for (p1, _, s1), (p2, _, s2) in zip(views, views[1:]):
+    for (p1, _, s1, _a), (p2, _, s2, _b) in zip(views, views[1:]):
         if want is not None and want not in (p1["pdf_page"], p2["pdf_page"]):
             continue
-        joined = _Compact(s1 + " " + s2)
-        span = locate(joined)
+        joined = _Compact(_soft(s1 + " " + s2))
+        span = locate(joined, True)
         if span:
             return dict(text=joined.slice(*span), pdf_page=p1["pdf_page"], pdf_page_end=p2["pdf_page"],
                         printed_page=p1["printed_page"], printed_page_end=p2["printed_page"], verified=True, page_hint_ok=True)
@@ -407,3 +421,68 @@ def clues(run: Run, extra_terms: list[str] | None = None, context_lines: int = 1
     found = {n: sorted(src) for n, rx in gaz_rx if rx.search(full) for src in [gaz[n]]}
     write_json(run.raw / "gazetteer_hits.json", found)
     return target
+
+
+# ---------------------------------------------------------------------------- text from pipeline artifacts
+
+
+def pages_from_pipeline(run_dir) -> list[dict]:
+    """Pages (original text, English translation, file, page) from a multi_hazard_pipeline run folder."""
+    from pathlib import Path
+
+    d = Path(run_dir)
+    src = read_json(d / "translated.json") or read_json(d / "source.json")
+    if not src:
+        raise SystemExit(f"No translated.json/source.json in {d}")
+    groups: dict = {}
+    order = []
+    for c in src["chunks"]:
+        key = (c.get("file") or c.get("filename") or "", str(c.get("page") or c.get("parent_chunk_id") or c["chunk_id"]))
+        if key not in groups:
+            groups[key] = {"file": key[0], "page": c.get("page"), "chunk_ids": [], "text": [], "translated_text": []}
+            order.append(key)
+        g = groups[key]
+        g["chunk_ids"].append(c["chunk_id"])
+        g["text"].append(c.get("text", ""))
+        g["translated_text"].append(c.get("translated_text") or c.get("text", ""))
+    pages = []
+    for i, key in enumerate(order):
+        g = groups[key]
+        pages.append(dict(pdf_page=i + 1, file=g["file"], file_page=g["page"], chunk_ids=g["chunk_ids"],
+                          text="\n".join(g["text"]), translated_text="\n".join(g["translated_text"])))
+    return pages
+
+
+def import_text(run: Run, pages: list[dict]) -> dict:
+    """Use already extracted report text (e.g. from the pipeline) instead of reading the PDF. No figures are extracted."""
+    run.ensure_dirs()
+    prefixes = run.config.get("caption_prefixes") or DEFAULT_CAPTION_PREFIXES
+    cap_rx = re.compile(r"\s+(?=(?:" + "|".join(re.escape(x) for x in prefixes) + r")\s*\d+[a-z]?\s*[:.])")
+
+    def relines(t: str) -> str:
+        if t.count("\n") > 3:
+            return t
+        t = cap_rx.sub("\n", t)
+        t = re.sub(r"\s*\b((?:Seite|Page)\s+\d{1,4})\b\s*", r"\n\1\n", t)
+        return re.sub(r"(?<=[.!?])\s+(?=[A-ZÄÖÜ0-9])", "\n", t)  # one sentence per line
+
+    texts = [relines(p["text"]) for p in pages]
+    if run.config.get("printed_page_offset") is None:
+        off, votes = _detect_offset(texts)
+        run.config["printed_page_offset"] = off
+        run.config["printed_page_offset_votes"] = votes
+    run.config["text_source"] = "pipeline artifacts (no PDF parsing, no figures)"
+    run.save_config()
+    out = []
+    for i, p in enumerate(pages):
+        rec = dict(p)
+        rec["text"] = texts[i]
+        rec["pdf_page"] = i + 1
+        rec["printed_page"] = run.printed(i + 1)
+        out.append(rec)
+    write_json(run.dir / REPORT_TEXT, out)
+    write_json(run.raw / "report_images.json", [])
+    write_json(run.raw / "report_tables.json", [])
+    caps = _captions(run, texts)
+    write_json(run.raw / "report_captions.json", caps)
+    return dict(pages=len(out), offset=run.page_offset, captions=len(caps))
