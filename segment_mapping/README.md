@@ -85,6 +85,6 @@ To add a region, copy `tirol.json` and list its services. Item types: `arcgis`, 
 
 ## Tests
 
-`python -m pytest test_segment_mapping.py` runs offline on synthetic data.
+`python -m unittest test_segment_mapping` runs offline on synthetic data.
 
 A full regression with real data is kept **outside** the project folder: `Documents/segment_mapping_regression/seigesbach_placements.json`. It reproduces the Seigesbach_Sol_pictures run (22 of 24 parts geometrically identical). It is a worked answer key, so never place it where a model evaluated on that report can read it. To use it, copy it to `RUN/scripts/placements.json` of a run fetched with the Tirol preset, then run `build` and `deliver`.
