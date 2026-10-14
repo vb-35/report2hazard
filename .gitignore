@@ -38,3 +38,4 @@ Thumbs.db
 
 # Worked mapping answer keys must never sit where evaluated models can read them
 /tests/fixtures/*placements*.json
+/seigesbach_mapping_prompt_visual_evidence.txt
