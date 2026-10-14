@@ -244,3 +244,29 @@ class FixesFromToolkitRunTests(TestCase):
         issues = spec_key_issues({"parts": [{"part_id": "1a", "geomtery": {}}], "data_gaps": [{"item": "x", "status": "y"}]})
         self.assertTrue(any("geomtery" in i for i in issues))
         self.assertTrue(any("data_gaps" in i and "item" in i for i in issues))
+
+
+class PromptTemplateTests(TestCase):
+    def test_prompt_fills_every_placeholder(self):
+        import re
+        import subprocess
+        import sys
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            (tmp / "report.pdf").write_bytes(b"%PDF-1.4\n")
+            (tmp / "segments.tsv").write_text(SEGMENTS, encoding="utf-8")
+            (tmp / "dem.tif").write_bytes(b"")
+            out = tmp / "prompt.txt"
+            cmd = [sys.executable, "-m", "segment_mapping", "prompt", "--report", str(tmp / "report.pdf"), "--segments",
+                   str(tmp / "segments.tsv"), "--run", str(tmp / "run folder"), "--dem", str(tmp / "dem.tif"), "--out", str(out)]
+            subprocess.run(cmd, check=True, capture_output=True, cwd=Path(__file__).parent)
+            text = out.read_text(encoding="utf-8")
+            left = set(re.findall(r"\[[a-zA-Z][^\]\n]*\]", text)) - {"[options]"}
+            self.assertEqual(left, set())
+            self.assertIn("2\tTestbach\tDebris flow in channel", text)
+            self.assertIn('--dem "', text)
+            self.assertNotIn("--catchment \"", text)
+            self.assertIn(f'init "{tmp / "run folder"}"', text)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

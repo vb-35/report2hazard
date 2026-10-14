@@ -16,6 +16,24 @@ python -m segment_mapping <command> RUN_FOLDER [options]      # --help on any co
 
 Use the project environment: `.venv\Scripts\python.exe -m segment_mapping ...` from the project folder.
 
+## Run a mapping task with a model
+
+1. Setup, once per machine: Python 3.11+ and `python -m venv .venv`, then `.venv\Scripts\python.exe -m pip install -r requirements.txt` from the project folder. Internet access is needed for downloads. Edge or Chrome is optional; it is used to check that the map loads.
+2. Prepare the inputs:
+   - the report PDF (keep it outside the run folder);
+   - the segment table as a TSV/CSV with a header row (`Segment, Event, Process, Generalized Category, Interaction Type, Sediment Transport Phase`);
+   - optionally, a DEM and a catchment outline.
+3. Generate the prompt. Use a new run folder for every model/run:
+
+   ```
+   .venv\Scripts\python.exe -m segment_mapping prompt --report REPORT.pdf --segments SEGMENTS.tsv --run output\EVENT_MODEL ^
+       [--dem DEM.tif --dem-info "source, resolution, CRS, licence"] [--catchment CATCHMENT.gpkg --catchment-info "name, code, area"] --out prompt.txt
+   ```
+
+   The template is [prompt_template.txt](prompt_template.txt). It contains the mapping rules, the deliverables and the mandatory toolkit workflow.
+4. Give `prompt.txt` to the model. Its working directory must be the project folder, and it needs shell and file tools and the ability to view images.
+5. For a blind/comparative run, first move worked answers for that report out of the project folder: earlier run folders in `output/`, answer keys.
+
 ## Workflow
 
 | Step | Command | Output |

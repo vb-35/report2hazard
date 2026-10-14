@@ -119,6 +119,48 @@ def cmd_import(a):
     _print({x: rec.get(x) for x in ("name", "kind", "count", "file", "resolution_m", "role", "note")})
 
 
+def cmd_prompt(a):
+    """Fill segment_mapping/prompt_template.txt for one mapping task (no run folder is created)."""
+    project = Path(__file__).resolve().parents[1]
+    template = (Path(__file__).with_name("prompt_template.txt")).read_text(encoding="utf-8")
+    report = Path(a.report).resolve()
+    if not report.exists():
+        raise SystemExit(f"Report not found: {report}")
+    seg_text = Path(a.segments).read_text(encoding="utf-8-sig").strip("\r\n")
+    parse_segment_table(seg_text)  # fail early on a malformed table
+    run_dir = Path(a.run).resolve()
+    if (run_dir / "run.json").exists():
+        print(f"WARNING: {run_dir} already contains a run; use a new folder per model/run.", file=sys.stderr)
+
+    def describe(path, info, kind):
+        if not path:
+            return info or "none provided"
+        f = Path(path).resolve()
+        if not f.exists():
+            raise SystemExit(f"{kind} file not found: {f}")
+        return f"{f}" + (f" ({info})" if info else "")
+
+    opts = ""
+    if a.dem:
+        opts += f'--dem "{Path(a.dem).resolve()}" '
+    if a.catchment:
+        opts += f'--catchment "{Path(a.catchment).resolve()}" '
+    out = (template.replace("[segment table]", seg_text)
+           .replace("[DEM description]", describe(a.dem, a.dem_info, "DEM"))
+           .replace("[catchment description]", describe(a.catchment, a.catchment_info, "Catchment"))
+           .replace("[provided data options]", opts)
+           .replace("[report PDF path]", str(report))
+           .replace("[run folder]", str(run_dir))
+           .replace("[project folder]", str(project)))
+    if a.out:
+        Path(a.out).write_text(out, encoding="utf-8")
+        print(f"Prompt written to {a.out}", file=sys.stderr)
+    else:
+        print(out)
+    print("Reminder: for a blind run, keep worked answers for this report (earlier run folders, answer keys) out of "
+          f"{project}.", file=sys.stderr)
+
+
 def cmd_config(a):
     run = Run(a.run)
     _apply_config(run, a)
@@ -438,6 +480,15 @@ def build_parser():
     s.add_argument("--default", action="store_true", help="make this raster the default DEM")
     for o in ("--provider", "--licence", "--licence-url", "--use", "--date-note"):
         s.add_argument(o)
+    s = add("prompt", cmd_prompt, "fill the mapping prompt template for a task (prints it, or --out FILE)", run=False)
+    s.add_argument("--report", required=True)
+    s.add_argument("--run", required=True, help="run folder the model will create (one per model/run)")
+    s.add_argument("--segments", required=True, help="TSV/CSV segment table with header row")
+    s.add_argument("--dem", help="provided DEM file")
+    s.add_argument("--dem-info", help="DEM description (source, resolution, CRS, licence)")
+    s.add_argument("--catchment", help="provided catchment outline file")
+    s.add_argument("--catchment-info", help="catchment name/code/area and other information")
+    s.add_argument("--out", help="write the prompt to this file")
     s = add("config", cmd_config, "show/change run settings (bbox, CRS, page offset, preset)")
     cfg_opts(s)
     s = add("report", cmd_report, "extract text, tables, captions, figures and page renders from the report")
@@ -574,7 +625,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     a = build_parser().parse_args(argv)
     run_dir = getattr(a, "run", None)
-    if run_dir and a.cmd not in ("locate",) and Path(run_dir, "run.json").exists() or a.cmd == "init":
+    if run_dir and a.cmd not in ("locate", "prompt") and Path(run_dir, "run.json").exists() or a.cmd == "init":
         try:
             Run(run_dir).log_command(argv)
         except Exception:

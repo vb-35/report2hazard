@@ -5,22 +5,12 @@ INPUTS
 - Report: [report PDF path]
 - Run folder: [run folder] (use a separate folder for each model/run)
 
-
 - Segment table (keep these IDs exactly as given):
-Segment	Event	Process	Generalized Category	Interaction Type	Sediment Transport Phase
-1	Seigesbach	Saturated slopes from extended period of heavy precipitation and snowmelt	Unstable pre-event conditions	Process-topography	Dysconnectivity
-2	Seigesbach	Heavy precipitation and hail	Triggering event	Process-topography	Dysconnectivity
-3	Seigesbach	Small debris flow within the catchment	Sediment surge	Process-topography	Transportation
-4	Seigesbach	Large debris flow surging through Seigesbach	Sediment surge	Process-topography	Transportation
-5	Seigesbach	Stream beds filled with debris	Changes in geomorphology	Process-topography	Deposition
-6	Seigesbach	Strong erosion in the main channel	Material mobilization	Process-topography	Erosion
-7	Seigesbach	Flooding along the streams	Alteration of channel dynamics 	Process-topography	Transportation
-8	Seigesbach	Damage in settlement areas and main road	Impact on permanent or temporary infrastructure	Process-structure 	Transportation
-9	Seigesbach	Suspended materials deposited over the valley bottom	Post-event redistribution	Process-topography	Deposition
+[segment table]
 
 - Spatial data provided with the task (use these first; download only what is missing):
-  - DEM: [DEM file path]
-  - Catchment: [catchment outline file path and/or name, area, other catchment information]
+  - DEM: [DEM description]
+  - Catchment: [catchment description]
 
 
 RULES
@@ -103,7 +93,7 @@ OTHER DELIVERABLES
 
 ENVIRONMENT AND TOOLKIT (mandatory)
 - All processing uses the fixed toolkit `segment_mapping` in [project folder] and the shared Python 3.13 environment [project folder]/.venv. Run every command from [project folder] as:
-    .venv\Scripts\python.exe -m segment_mapping <command> [run folder] [options]
+    .venv\Scripts\python.exe -m segment_mapping <command> "[run folder]" [options]
   (`--help` works on every command.) Read [project folder]/segment_mapping/README.md and [project folder]/segment_mapping/SPEC.md before starting.
 - Do NOT write code: no Python/R/shell scripts, notebooks, `python -c`, or edits to the toolkit, and no new virtual environment or package installs. Your decisions are data, not code:
   - the run settings, set through commands;
@@ -115,7 +105,7 @@ ENVIRONMENT AND TOOLKIT (mandatory)
 
 WORKFLOW
 1. Save the segment table above as [run folder]/segments_input.tsv (tab-separated, header row, values unchanged). Then:
-   init [run folder] --report "[report PDF path]" --segments [run folder]/segments_input.tsv --dem "[DEM file path]" --catchment "[catchment file path]" --event "<event name and date>" --preset <tirol for Tyrol, otherwise global> (or --crs EPSG:<local projected CRS> for a region without a preset)
+   init "[run folder]" --report "[report PDF path]" --segments "[run folder]/segments_input.tsv" [provided data options]--event "<event name and date>" --preset <tirol for Tyrol, otherwise global> (or --crs EPSG:<local projected CRS> for a region without a preset)
 2. report → look at every contact sheet, then at the page renders and native figures (data_raw/report_images.json) at full resolution. Use `render` (--crop/--zoom/--grid) to read maps, legends, scale bars and photographs, and to read pixel coordinates. Use `render --mark/--polygon` to verify picked pixels. Use `text --grep` and `quote` for written evidence.
 3. inventory (rule 2: list what you have and what is missing). Then fill the gaps (rule 3):
    - `locate` and `config --bbox/--detail-bbox` if the area must be extended beyond the provided catchment (e.g. the valley floor downstream);
