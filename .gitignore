@@ -23,6 +23,7 @@ Thumbs.db
 .DS_Store
 
 # Local reports, generated results, and scratch work
+/data/
 /results/
 /artifacts*/
 /outputs/
