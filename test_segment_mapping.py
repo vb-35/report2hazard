@@ -252,7 +252,7 @@ class PromptTemplateTests(TestCase):
         import subprocess
         import sys
 
-        tmp = Path(tempfile.mkdtemp())
+        tmp = Path(tempfile.mkdtemp()).resolve()
         try:
             (tmp / "report.pdf").write_bytes(b"%PDF-1.4\n")
             (tmp / "segments.tsv").write_text(SEGMENTS, encoding="utf-8")

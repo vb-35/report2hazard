@@ -92,7 +92,7 @@ OTHER DELIVERABLES
    - Any segment where you were unsure what the report means, with the alternatives.
 
 ENVIRONMENT AND TOOLKIT (mandatory)
-- All processing uses the fixed toolkit `segment_mapping` in [project folder] and the shared Python 3.13 environment [project folder]/.venv. Run every command from [project folder] as:
+- All processing uses the fixed toolkit `segment_mapping` in [project folder] and the shared Python environment [project folder]/.venv. Run every command from [project folder] as:
     .venv\Scripts\python.exe -m segment_mapping <command> "[run folder]" [options]
   (`--help` works on every command.) Read [project folder]/segment_mapping/README.md and [project folder]/segment_mapping/SPEC.md before starting.
 - Do NOT write code: no Python/R/shell scripts, notebooks, `python -c`, or edits to the toolkit, and no new virtual environment or package installs. Your decisions are data, not code:
