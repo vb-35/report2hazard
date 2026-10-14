@@ -167,7 +167,7 @@ Proposed semantic comparison (not run; live calls require authorization): use th
 
 First manually adjudicate labels and direct causal links from source passages, retaining uncertainty. Compare old versus revised classification/review on the same frozen segments to isolate taxonomy effects; separately compare segmentation on the same frozen source/translation to count unsupported links and missed supported links. Keep model, temperature, batching, and correction budget identical. Record source-supported label accuracy (including unclear direction), evidence-plus-rule coverage of disagreements, unsupported replacement proposals, correction label flips, omitted steps, and output length. Reviewer pass rate alone is not a quality metric. Preserve saved artifacts and write any authorized comparison into a separate run directory.
 
-OCR, geospatial/GIS support, and external knowledge retrieval are deliberately deferred. Scanned-PDF OCR is not supported, and Tesseract `.traineddata` files are not required.
+OCR and external knowledge retrieval are deliberately deferred. GIS placement of approved segments is handled outside the pipeline by the `segment_mapping` toolkit (see below). Scanned-PDF OCR is not supported, and Tesseract `.traineddata` files are not required.
 
 ## Repository contents and local data
 

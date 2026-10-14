@@ -5,7 +5,7 @@ jsonschema
 Flask
 lingua-language-detector==2.1.1
 
-# GIS / segment localization
+# GIS placement of segments (segment_mapping)
 geopandas
 shapely
 pyproj
@@ -13,7 +13,7 @@ rasterio
 numpy
 scipy
 folium
-matplotlib  # QA/diagnostic plots for segment localization
+matplotlib  # QA/diagnostic plots (segment_mapping)
 requests  # downloads (Overpass, Land Tirol ArcGIS REST / WCS)
 pypdfium2  # report page renders (segment_mapping)
 Pillow  # figure crops, colour digitizing (segment_mapping)
