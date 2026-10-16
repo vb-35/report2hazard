@@ -1,0 +1,127 @@
+TASK
+Using all relevant evidence in the event report (text, tables, maps, photographs, aerial imagery, diagrams and figure captions) and the extracted segment table I provide, place every segment on a map of the catchment using GIS tools. Output all placements as one polygon shapefile with one feature per placed part.
+
+INPUTS
+- Report: [report PDF path]
+- Run folder: [run folder] (use a separate folder for each model/run)
+
+- Segment table (keep these IDs exactly as given):
+[segment table]
+
+- Spatial data provided with the task (use these first; download only what is missing):
+  - DEM: [DEM description]
+  - Catchment: [catchment description]
+
+
+RULES
+1. Use both the written and visual evidence in the report. Read text, tables and captions, and inspect maps, photographs, orthophotos, diagrams, cross-sections, legends, annotations and scale bars at sufficient resolution.
+   - Check each visual's caption, date, orientation and legend. Distinguish the target event from historical events, pre-event conditions, later clean-up/reconstruction, and general hazard zones.
+   - Record what is directly shown separately from what you infer. A photograph may help identify a damaged building, bridge, channel, deposit or bank side; distinguish visible damage from mere proximity to damage.
+   - If a report map or orthophoto explicitly delineates the relevant event extent, georeference and digitize that outline where its location can be established reliably. Prefer the mapped event outline to a reconstructed terrain model for that same process and event.
+   - For georeferencing, use the printed coordinates/grid if available, or identifiable landmarks matched to GIS features. Use enough well-distributed control points for the transformation (at least three non-collinear points for an affine transform). Record the source page/figure, source and target CRS, transformation, control points, RMS and maximum residuals, and any independent check point. Residuals at fitted control points are not independent validation. If no independent check is available, say so. Judge positional adequacy against the figure scale and the size of the part being placed.
+   - Oblique or ground photographs can support feature identification and relative position. Do not trace their camera-view boundaries directly as map polygons. Locate identifiable features in GIS and use their ground footprints, or explain and validate any terrain/camera reconstruction. A boundary you interpret visually is not automatically a documented outline.
+   - If a figure is unreadable, cannot be located reliably, or conflicts with another source, record the limitation or alternative interpretation and use the best supported fallback. Temporary page renders and crops are allowed for inspection; do not duplicate the full report or include report images in the reviewer ZIP.
+
+2. Before placing anything, list the spatial data you already have and what is missing (catchment outline, stream network, roads, buildings, place and field names, elevation model, etc.).
+3. Get missing data from public online sources where possible. Prefer official data over crowd-sourced data. For example:
+   - Official regional or national open data. For Tyrol, Austria, this means Land Tirol / data.gv.at / tiris: the official torrent catchment outlines, the stream network, place, farm and field names, road kilometre markers, hazard zone plans, and the elevation model (DEM, 5 m or finer).
+   - OpenStreetMap (via Overpass): streams, roads, bridges, building footprints, place names.
+   - National mapping agency services (WMS/WFS/WCS) and other open DEMs if no regional one exists.
+   Record every source you use: name, URL, layer, date or version, licence.
+   If a source can't be found or accessed, continue without it, use the best fallback available, and say so in the final report (see DELIVERABLES).
+4. Pull every geographic clue from the report: place, farm, bridge and road names, road km values, stream chainage (e.g. "hm" = 100 m units from the mouth), elevations, distances, directions, areas, volumes, timings, and which tributaries or confluences are mentioned. For written clues, quote the exact passage and page. For visual clues, record the PDF page, printed page, figure/panel number, caption or legend quotation where relevant, and a precise description of the visible evidence. Never present your own visual description as a verbatim quotation. Include mapped outlines, labels, visible damage, flow paths, bank sides and landmarks that constrain location or extent.
+5. Match the clues to GIS features and use the most specific location the evidence supports:
+   a. Calibrate chainage against the stream line and check it against at least one known point (e.g. a confluence or bridge). Report the offset.
+   b. If an explicit, reliably located event outline is available in a report map or orthophoto, digitize it and compare its measured area with any stated area. Preserve the mapped outline; do not distort it merely to force an area match. Explain discrepancies, map resolution and georeferencing uncertainty in segments_evidence.csv. If no usable documented outline exists and the report gives an area for a process, fit the reconstructed polygon (or the combined parts it refers to) to that area within +/-5%. Report the target value, fitted value and fitted parameter (e.g. height-above-channel threshold). If you do not fit to it, explain why. A fitted area is not an independent check: say so. If the report gives a length or elevation, check the polygon against it and report both values.
+
+   c. Build each polygon from the most defensible method available: a reliably georeferenced event outline explicitly delineated in the report, the official catchment or sub-catchment outline, a stream reach traced from the DEM, a building footprint identified from text or visual landmarks, a road or bridge widened by its real width, or an area modelled from the DEM (e.g. ground within X m of the stream bed for flooding or deposition). Use a plain fixed-width buffer only as a last resort, and give the width and why you chose it.
+   d. If neither the report's written evidence nor its reliably located visual evidence gives an outline, area, depth, length or other constraint on a part's extent (e.g. flooding with no mapped or stated extent):
+      - choose one method and one parameter value (e.g. a DEM threshold), and justify the choice from the report's written or visual evidence (e.g. stated deposit heights, named limits such as "down to the X confluence");
+      - also compute the area at at least two alternative values (one lower, one higher) and report all of them in segments_evidence.csv and data_report.md as a sensitivity table;
+      - use the chosen value for the polygon, set placement = modelled, confidence = low, is_hypo = 1;
+      - clip the extent to any limits the written or visual evidence does give (upstream/downstream end, bank side, road).
+6. Every segment must appear in the shapefile, each as one or more polygons, even if approximate. A segment can have several parts (e.g. a damage segment → bridge, road stretch, individual buildings). If a placement isn't directly supported, still place it, but mark it as a hypothesis (as defined in rule 8) and give the alternative readings.
+7. Present a polygon as a documented event footprint only when the report explicitly gives the relevant event/process outline and that outline can be positioned reliably (e.g. an event polygon clearly delineated in a georeferenced report map or annotated orthophoto). A photograph of damage, a hazard-zone boundary, an inferred boundary in unannotated imagery, or an area fitted to a numerical target does not by itself provide a documented event outline. Classify other placements according to rule 8.
+
+8. Classify each part with these definitions. placement, is_hypo and confidence are independent fields; set each one by its own definition.
+   placement (how the geometry was built):
+     documented  = the report explicitly provides the event/process outline in text, a map or an annotated orthophoto, and its location can be established reliably. Georeferencing and digitizing that explicit outline does not by itself make it modelled.
+     approximate = an official or OSM feature that the report's written or visual evidence names or clearly identifies (catchment, named bridge, road stretch, building).
+     modelled    = derived from the DEM or another calculation (threshold, fitted area, chainage reach).
+     hypothesis  = the geometry itself rests on an assumption with no method behind it (e.g. an arbitrary buffer around an inferred point).
+   is_hypo (should a reviewer check what this is?):
+     1 = it is uncertain which place or feature the report means (several plausible candidates, a name not found in any gazetteer, an inferred identity), OR the extent has no basis in the report (rule 5d).
+     0 = the place is identified, and the extent is a reliably located explicit report outline, an official feature outline, or fitted/checked against a value the report gives. A visual identification with several plausible matches remains is_hypo = 1.
+     Uncertainty about the exact outline alone is NOT a reason for is_hypo = 1.
+   confidence (confidence in the LOCATION of the part, not the precision of its outline):
+     high   = the report names the feature, and it matches exactly one official GIS feature (e.g. the named catchment, a bridge whose name matches the official register). is_hypo must be 0.
+     medium = the location follows from chainage, distances, directions, named places or reliably georeferenced visual landmarks with a single match, but the feature itself is not named in the GIS data, or the outline is modelled or fitted.
+     low    = a candidate chosen among several by proximity or terrain, an inferred identity, or an extent with no basis in the report (rule 5d).
+   Give the reason for each classification in segments_evidence.csv.
+
+SHAPEFILE: [run folder]/outputs/segments.shp (.shp, .shx, .dbf, .prj, .cpg in UTF-8)
+- Polygons only. Use the local projected CRS for the region (e.g. EPSG:31254 MGI / Austria GK West for Tyrol) and state it.
+- One feature per part. Fields (names ≤10 characters):
+  seg_id     segment ID from the table
+  part_id    e.g. 4a, 4b, 8c
+  part_label short description of what the part represents
+  process    process from the table
+  category   generalized category
+  interact   interaction type
+  phase      sediment transport phase
+  placement  documented | approximate | modelled | hypothesis (rule 8)
+  is_hypo    1/0 (rule 8)
+  confidence high | medium | low (rule 8)
+  geom_basis method used to build the polygon (≤254 characters)
+  data_src   GIS layers and report figure references used
+  area_ha    polygon area
+  rep_value  value given in the report for comparison (area, length, etc.), if any
+  rep_page   report page(s)
+- Shapefile text fields are cut off at 254 characters. Put the full quotation or visual observation, reasoning, uncertainty, alternative hypotheses, the classification reasons (rule 8), and any fit or sensitivity results (rules 5b, 5d) in a companion CSV, segments_evidence.csv, keyed by part_id. Include evidence_type (text | table | map | photograph | orthophoto | diagram | mixed), figure/panel references, image date/event relevance, visual identification method, and georeferencing method, control-point reference, positional errors and limitations where applicable. For mixed evidence, link each quotation/observation to its own page or figure. Include the detailed control-point coordinates in the evidence CSV, for example as a JSON field, so the reviewer ZIP contains the georeferencing evidence.
+
+OTHER DELIVERABLES
+1. An interactive HTML map on a base map, with one layer per segment, hypotheses drawn with a dashed outline, and pop-ups showing all attributes plus the written quotations and/or visual observations, page/figure references, reasoning and uncertainty. Check that it loads.
+2. A reviewer zip with only the shapefile, the evidence CSV, the HTML map and a short README (no report, no segment table). The README explains the fields and lists the hypotheses to check.
+3. A final report (in the chat, also saved as data_report.md) including:
+   - Data found and used: source, layer, date, licence.
+   - Data searched for but not found or not accessible, and how each gap affected the placements (e.g. "no official catchment outline → segment 1 uses a DEM-derived watershed").
+   - A table per segment: parts, placement type, confidence, main evidence, and whether it's a hypothesis.
+   - The checks you ran (chainage offset, report vs polygon areas with the fitted parameter, and visual-identification/georeferencing checks) and their results.
+   - Visual evidence used: page/figure, what it shows, event/date relevance, whether an explicit boundary was digitized or a feature was identified, georeferencing method and errors, and any disagreement with the text or other figures.
+   - The sensitivity table for every part placed under rule 5d.
+   - Any segment where you were unsure what the report means, with the alternatives.
+
+ENVIRONMENT AND TOOLKIT (mandatory)
+- All processing uses the fixed toolkit `segment_mapping` in [project folder] and the shared Python environment [project folder]/.venv. Run every command from [project folder] as:
+    .venv\Scripts\python.exe -m segment_mapping <command> "[run folder]" [options]
+  (`--help` works on every command.) Read [project folder]/segment_mapping/README.md and [project folder]/segment_mapping/SPEC.md before starting.
+- Do NOT write code: no Python/R/shell scripts, notebooks, `python -c`, or edits to the toolkit, and no new virtual environment or package installs. Your decisions are data, not code:
+  - the run settings, set through commands;
+  - the placement spec [run folder]/scripts/placements.json (format in SPEC.md): refs, chainages, georeferencing control points, visual and table ledgers, parts with geometry expressions, parameters, fits, sensitivity values, quotations, reasoning and classification reasons, checks, data gaps and report notes.
+  You may write these data files: placements.json, the segment table TSV, and notes.
+  Edit placements.json with your file editing tool (not sed or shell one-liners). Do not read the toolkit's source code; if README/SPEC leave something unclear, note it under "Toolkit limitations".
+- If the toolkit cannot express something you need, do not write code. Use the closest available operation, describe the limitation under `report_notes.other` ("Toolkit limitations"), and continue.
+- Work only from the report, the provided data and public sources. Do not open other run folders under [project folder]/output, earlier results, or [project folder]/tests.
+
+WORKFLOW
+1. Save the segment table above as [run folder]/segments_input.tsv (tab-separated, header row, values unchanged). Then:
+   init "[run folder]" --report "[report PDF path]" --segments "[run folder]/segments_input.tsv" [provided data options]--event "<event name and date>" --preset <tirol for Tyrol, otherwise global> (or --crs EPSG:<local projected CRS> for a region without a preset)
+2. report → look at every contact sheet, then at the page renders and native figures (data_raw/report_images.json) at full resolution. Use `render` (--crop/--zoom/--grid) to read maps, legends, scale bars and photographs, and to read pixel coordinates. Use `render --mark/--polygon` to verify picked pixels. Use `text --grep` and `quote` for written evidence.
+3. inventory (rule 2: list what you have and what is missing). Then fill the gaps (rule 3):
+   - `locate` and `config --bbox/--detail-bbox` if the area must be extended beyond the provided catchment (e.g. the valley floor downstream);
+   - `fetch preset ...` (skip items you already have, e.g. `--skip dem` when a DEM was provided), `fetch osm`, `fetch arcgis|wfs|wcs|image|file` for official services you find, and `fetch dem-global` only as a last-resort DEM;
+   - `source --kind failed` for anything searched for but not accessible, and `source --kind reference` for consulted pages or metadata.
+   Run `inventory` again afterwards.
+4. clues (rule 4) → review outputs/geographic_clues.csv. Identify features with `find`, `fields`, `plot` (with an orthophoto or hillshade background and labelled ids) and `probe` (e.g. distances along streams and chainage).
+5. Write scripts/placements.json. Then:
+   - `georef` — check RMS, max residual, the independent check error and the QA overlay PNG; add withheld check points;
+   - `build` — repeat until it reports 0 errors; address every warning or explain it in report_notes;
+   - `plot --parts` over an orthophoto or hillshade — visually check every part.
+6. deliver → fix every validation error or map-check failure, then deliver again. Finally, print outputs/data_report.md in the chat as the final report (add a short summary of the main uncertainties at the top if useful).
+
+OUTPUT FOLDER LAYOUT (created by the toolkit)
+- [run folder]/data_raw: one copy of each dataset in the working projection, the source manifest, extracted report text and ledgers.
+- [run folder]/scripts: placements.json, segments_input.tsv, commands.log (the decisions and the exact commands run).
+- [run folder]/outputs: results and the reviewer ZIP.
+- [run folder]/tmp: temporary renders and QA plots, never zipped.
+- The report is never copied into the run folder.

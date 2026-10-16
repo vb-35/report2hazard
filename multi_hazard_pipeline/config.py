@@ -98,6 +98,9 @@ class LLMConfig:
     reasoning_effort: str | None = "medium"
     timeout_seconds: int = 660
     max_request_chars: int = 200000
+    # Optional cap on generated tokens (reasoning included). None keeps the server default. A cap ends runaway
+    # generations that a server keeps running after the client has disconnected.
+    max_output_tokens: int | None = None
 
     def api_key_from_env(self) -> str:
         api_key = os.environ.get(self.api_key_env_var, "").strip()

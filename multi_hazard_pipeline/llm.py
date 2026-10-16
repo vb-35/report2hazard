@@ -53,12 +53,20 @@ def extract_response_json(payload: dict[str, Any]) -> Any:
         if isinstance(parsed, dict):
             return parsed
     for item in payload.get("output", []):
+        if item.get("type") not in {None, "message"} or item.get("role") not in {None, "assistant"}:
+            continue
         for part in item.get("content", []):
             parsed = part.get("parsed") if isinstance(part, dict) else None
             if isinstance(parsed, dict):
                 return parsed
     try:
-        raw = payload["choices"][0]["message"]["content"].strip()
+        if "output" in payload:
+            raw = _response_text(payload)
+            if not raw:
+                raise PipelineError("unexpected response payload: missing assistant JSON answer")
+        else:
+            raw = payload["choices"][0]["message"]["content"]
+        raw = raw.strip()
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.DOTALL)
         # Require the entire answer to be JSON; never salvage a valid prefix of partial output.
@@ -72,6 +80,17 @@ class _RequestError(PipelineError):
         super().__init__(message)
         self.retryable = retryable
         self.retry_after = retry_after
+
+
+def _response_text(payload: dict[str, Any]) -> str:
+    """Read only the assistant's answer, never reasoning or tool output."""
+    return "".join(
+        part["text"]
+        for item in payload.get("output", [])
+        if item.get("type") == "message" and item.get("role") == "assistant"
+        for part in item.get("content", [])
+        if part.get("type") == "output_text" and isinstance(part.get("text"), str)
+    )
 
 
 def _retry_after(headers: Any) -> float | None:
@@ -96,6 +115,8 @@ def _retry_after(headers: Any) -> float | None:
 
 def _failed_answer(payload: Any) -> str:
     if isinstance(payload, dict):
+        if "output" in payload:
+            return _response_text(payload) or "[No assistant answer returned]"
         choices = payload.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             message = choices[0].get("message", {})
@@ -128,6 +149,7 @@ class ChatClient:
         response_schema: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
         total_timeout_seconds: float | None = None,
+        images: list[str] | None = None,
     ) -> Any:
         last_error: Exception | None = None
         if self.config.retries < 1:
@@ -172,6 +194,7 @@ class ChatClient:
                     response_schema=response_schema,
                     repair=repair,
                     timeout_seconds=request_timeout,
+                    images=images,
                 )
                 network_seconds = perf_counter() - network_started
                 response_chars = len(json.dumps(payload, ensure_ascii=False))
@@ -224,6 +247,7 @@ class ChatClient:
                     "total_timeout_seconds": total_timeout_seconds,
                     "prompt_chars": prompt_chars, "input_chars": input_chars,
                     "response_chars": response_chars, "chunk_count": len(chunks),
+                    "image_count": len(images or []),
                     "chunk_text_chars": sum(chunk_sizes), "max_chunk_text_chars": max(chunk_sizes, default=0),
                     "segment_count": len(segment_rows),
                     "error_type": type(failure).__name__ if failure else None,
@@ -261,7 +285,11 @@ class ChatClient:
     def _request_body(
         self, *, system_prompt: str, user_payload: Any, response_schema: dict[str, Any] | None,
         repair: dict[str, str] | None = None,
+        images: list[str] | None = None,
     ) -> str:
+        responses = self.config.text_endpoint.rstrip("/") == "/responses"
+        if images and not responses:
+            raise _RequestError("image attachments require the /responses endpoint")
         payload = {
             "model": self.config.model,
             "temperature": self.config.temperature,
@@ -272,8 +300,30 @@ class ChatClient:
         }
         if response_schema:
             payload["response_format"] = {"type": "json_schema", "json_schema": response_schema}
+        if self.config.max_output_tokens:
+            payload["max_tokens"] = self.config.max_output_tokens
         if self.config.reasoning_effort is not None:
             payload["reasoning_effort"] = self.config.reasoning_effort
+        messages = payload["messages"]
+        if responses:
+            payload["input"] = payload.pop("messages")
+            payload["store"] = False
+            if response_schema:
+                payload.pop("response_format")
+                payload["text"] = {"format": {"type": "json_schema", **response_schema}}
+            if "max_tokens" in payload:
+                payload["max_output_tokens"] = payload.pop("max_tokens")
+            if "reasoning_effort" in payload:
+                payload["reasoning"] = {"effort": payload.pop("reasoning_effort")}
+            if images:
+                if any(not isinstance(url, str) or not url.startswith(
+                    ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+                ) for url in images):
+                    raise _RequestError("images must be PNG, JPEG or WebP base64 data URLs")
+                messages[1]["content"] = [
+                    {"type": "input_text", "text": messages[1]["content"]},
+                    *({"type": "input_image", "image_url": url, "detail": "auto"} for url in images),
+                ]
         body = compact_json(payload)
         if len(body) > self.config.max_request_chars:
             raise _RequestError(
@@ -287,7 +337,7 @@ class ChatClient:
                 "Return only a complete JSON object matching the required schema."
             )
             answer = {"role": "assistant", "content": repair["answer"]}
-            payload["messages"].extend([answer, {"role": "user", "content": feedback}])
+            messages.extend([answer, {"role": "user", "content": feedback}])
             body = compact_json(payload)
             if len(body) > self.config.max_request_chars:
                 # Only the faulty answer may be shortened; task, evidence, schema and error remain intact.
@@ -314,6 +364,7 @@ class ChatClient:
         self, *, system_prompt: str, user_payload: Any, response_schema: dict[str, Any] | None,
         repair: dict[str, str] | None = None,
         timeout_seconds: float | None = None,
+        images: list[str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.config.api_base_url.rstrip('/')}{self.config.text_endpoint}"
         try:
@@ -328,7 +379,7 @@ class ChatClient:
         except ValueError as exc:
             raise _RequestError(f"chat request configuration error: {exc}") from exc
         body = self._request_body(system_prompt=system_prompt, user_payload=user_payload,
-                                  response_schema=response_schema, repair=repair)
+                                  response_schema=response_schema, repair=repair, images=images)
         req = request.Request(
             url,
             data=body.encode("utf-8"),

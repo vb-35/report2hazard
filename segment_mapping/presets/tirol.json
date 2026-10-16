@@ -1,0 +1,47 @@
+{
+  "name": "tirol",
+  "description": "Tyrol (Austria): Land Tirol / tiris open government data (ArcGIS Service_Public), ALS DEM via WCS, orthophotos, OSM.",
+  "crs": "EPSG:31254",
+  "provider": "Land Tirol / tiris (data.tirol.gv.at)",
+  "licence": "CC BY 4.0 (Datenquelle: Land Tirol - data.tirol.gv.at)",
+  "licence_url": "https://www.tirol.gv.at/data/nutzungsbedingungen/",
+  "caption_prefixes": ["Abbildung", "Abb.", "Tabelle", "Tab.", "Figure", "Table"],
+  "basemaps": [
+    {"name": "basemap.at", "url": "https://mapsneu.wien.gv.at/basemap/geolandbasemap/normal/google3857/{z}/{y}/{x}.png", "attr": "basemap.at (CC BY 4.0)", "max_zoom": 19},
+    {"name": "basemap.at orthophoto", "url": "https://mapsneu.wien.gv.at/basemap/bmaporthofoto30cm/normal/google3857/{z}/{y}/{x}.jpeg", "attr": "basemap.at orthophoto (CC BY 4.0)", "max_zoom": 19},
+    {"name": "OpenStreetMap", "url": "OpenStreetMap", "attr": "© OpenStreetMap contributors"},
+    {"name": "Land Tirol hillshade (DGM)", "type": "wms", "url": "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WMSServer", "layers": "Image_Schummerung_Gelaendemodell", "attr": "Land Tirol (CC BY 4.0)", "opacity": 0.5}
+  ],
+  "locate": [
+    {"service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_wasser/MapServer", "layer_name": "Einzugsgebiete WLV", "layer_id": 67, "field": "NAMEEZGWLV", "label": "WLV torrent catchments"},
+    {"service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Gewässernamen", "layer_id": 3, "field": "GEW_NAME", "label": "stream names"},
+    {"service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Orts-, Flurnamen", "layer_id": 2, "field": "NAME", "label": "place and field names"}
+  ],
+  "items": [
+    {"name": "catchments", "type": "arcgis", "group": "vector", "role": "catchment", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_wasser/MapServer", "layer_name": "Einzugsgebiete WLV", "layer_id": 67, "use": "official torrent (WLV) catchment outlines; HZB codes"},
+    {"name": "streams", "type": "arcgis", "group": "vector", "role": "streams", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_wasser/MapServer", "layer_name": "Fließgewässer (1)", "layer_id": 63, "use": "official stream network with names (GEW_NAME, GEW_NAME_HAUPT) and HZB codes"},
+    {"name": "stream_names", "type": "arcgis", "group": "vector", "role": "streams", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Gewässernamen", "layer_id": 3, "use": "named stream lines with HZB_GEW codes"},
+    {"name": "river_km", "type": "arcgis", "group": "vector", "role": "stream_km", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_wasser/MapServer", "layer_name": "Flüsse km Striche", "layer_id": 59, "use": "river kilometre ticks (larger rivers only)"},
+    {"name": "roads", "type": "arcgis", "group": "vector", "role": "roads", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_infrastruktur/MapServer", "layer_name": "Straßen (1)", "layer_id": 30, "use": "state/federal road centrelines (STR_CODE e.g. L13)"},
+    {"name": "local_roads", "type": "arcgis", "group": "vector", "role": "roads", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_infrastruktur/MapServer", "layer_name": "Verkehrswege (3)", "layer_id": 16, "use": "municipal and access roads"},
+    {"name": "road_km", "type": "arcgis", "group": "vector", "role": "road_km", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_infrastruktur/MapServer", "layer_name": "Kilometer (1)", "layer_id": 23, "use": "road kilometre markers (KM1, STR_CODE)"},
+    {"name": "bridges", "type": "arcgis", "group": "vector", "role": "bridges", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_infrastruktur/MapServer", "layer_name": "Brücken und Tunnel (1)", "layer_id": 26, "use": "official bridge axes with names (true geometry; layers 27/28 are offset symbols)"},
+    {"name": "road_parcels", "type": "arcgis", "group": "vector", "role": "road_land", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_infrastruktur/MapServer", "layer_name": "Grundstücke LSV B+L", "layer_id": 21, "use": "state/federal road land parcels (variable road width support)"},
+    {"name": "places", "type": "arcgis", "group": "vector", "role": "names", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Orts-, Flurnamen", "layer_id": 2, "use": "place and field names"},
+    {"name": "field_names", "type": "arcgis", "group": "vector", "role": "names", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Flurnamenerhebung", "layer_id": 5, "use": "field-name survey (local names, variants)"},
+    {"name": "building_points", "type": "arcgis", "group": "vector", "role": "building_points", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Gebäude kl 5000", "layer_id": 18, "use": "official building points (AGWR); not footprints"},
+    {"name": "building_addresses", "type": "arcgis", "group": "vector", "role": "names", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Gebäude gr 5000", "layer_id": 19, "use": "building addresses, farm names (HOFNAME), house numbers"},
+    {"name": "municipalities", "type": "arcgis", "group": "vector", "role": "", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Gemeinden", "layer_id": 45, "use": "municipality boundaries"},
+    {"name": "dem_dates", "type": "arcgis", "group": "metadata", "role": "", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Datenstand Höhenmodell", "layer_id": 64, "use": "acquisition date of the ALS DEM"},
+    {"name": "ortho_flight_dates", "type": "arcgis", "group": "metadata", "role": "", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_basis/MapServer", "layer_name": "Flugdatum", "layer_id": 62, "use": "flight dates of the current orthophoto"},
+    {"name": "ortho_2013_2015_years", "type": "arcgis", "group": "metadata", "role": "", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/orthofoto/MapServer", "layer_name": "Flugjahr_2013_2015", "layer_id": 17, "use": "flight year of the 2013-2015 orthophoto mosaic"},
+    {"name": "hazard_zones", "type": "arcgis", "group": "vector", "role": "hazard_zones", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_naturgefahren/MapServer", "layer_name": "Gefahrenzone Wildbach", "layer_id": 24, "use": "torrent hazard zones (reference only; never an event outline)"},
+    {"name": "hazard_plan_area", "type": "arcgis", "group": "metadata", "role": "", "service": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/ogd_naturgefahren/MapServer", "layer_name": "GZW Planungsbereich", "layer_id": 20, "use": "hazard zone plan extent and dates"},
+    {"name": "dem", "type": "wcs", "group": "dem", "role": "dem", "url": "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer", "coverage": "Gelaendemodell_5m_M28", "res": 5, "version": "1.0.0", "use": "terrain model (ALS DTM 5 m); check dem_dates for acquisition year", "date_note": "see dem_dates layer"},
+    {"name": "dem_fine", "type": "wcs", "group": "dem_fine", "role": "dem", "bbox": "detail", "url": "https://gis.tirol.gv.at/arcgis/services/Service_Public/terrain/MapServer/WCSServer", "coverage": "Gelaendemodell_50cm_M28", "res": 1, "version": "1.0.0", "use": "fine terrain model for the fan/valley floor (ALS 0.5 m resampled to 1 m)", "date_note": "see dem_dates layer"},
+    {"name": "ortho_current", "type": "arcgis_export", "group": "ortho", "role": "orthophoto", "bbox": "detail", "url": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/orthofoto/MapServer", "layer": "Image_Aktuell_RGB", "res": 0.5, "use": "current orthophoto (landmarks, footprints)", "date_note": "current mosaic; see ortho_flight_dates"},
+    {"name": "ortho_2013_2015", "type": "arcgis_export", "group": "ortho", "role": "orthophoto", "bbox": "detail", "url": "https://gis.tirol.gv.at/arcgis/rest/services/Service_Public/orthofoto/MapServer", "layer": "Image_2013_2015", "res": 1, "use": "historical orthophoto (pre/post-event landmarks; check flight year)", "date_note": "2013-2015 mosaic; see ortho_2013_2015_years"},
+    {"name": "osm", "type": "osm", "group": "osm", "role": "buildings", "bbox": "detail"}
+  ],
+  "other_mosaics": "Orthophoto layers available in the same service (use `fetch image --type arcgis_export --layer NAME`): Image_2022, Image_2019_2021, Image_2016_2018, Image_2013_2015, Image_2009_2012, Image_2004_2009, Image_1999_2004, Image_1970_1982, Image_1949_1954, Image_1940, Image_Aktuell_RGB, Image_Aktuell_CIR."
+}

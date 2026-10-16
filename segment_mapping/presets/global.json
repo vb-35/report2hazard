@@ -1,0 +1,14 @@
+{
+  "name": "global",
+  "description": "Works anywhere: OpenStreetMap features + Copernicus GLO-30 DEM. Add official regional data with `fetch arcgis|wfs|wcs|image|file`.",
+  "crs": null,
+  "caption_prefixes": ["Abbildung", "Abb.", "Figure", "Fig.", "Figura", "Tabelle", "Tab.", "Table", "Tableau", "Tabella"],
+  "basemaps": [
+    {"name": "OpenStreetMap", "url": "OpenStreetMap", "attr": "© OpenStreetMap contributors"},
+    {"name": "Esri World Imagery (reference only)", "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "attr": "Esri, Maxar, Earthstar Geographics"}
+  ],
+  "items": [
+    {"name": "osm", "type": "osm", "bbox": "detail", "role": "buildings", "group": "osm"},
+    {"name": "dem_glo30", "type": "copernicus_dem", "res": 30, "role": "dem", "group": "dem"}
+  ]
+}
