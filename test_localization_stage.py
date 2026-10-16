@@ -1,4 +1,4 @@
-"""Offline tests for text-only localization: spatial package, pipeline text import, facts, templates, localize stage."""
+"""Offline tests for localization: spatial packages, text/visual evidence, templates and delivery."""
 import json
 import shutil
 import tempfile
@@ -80,10 +80,12 @@ class FakeModel:
 
     def __init__(self):
         self.calls = []
+        self.requests = []
 
     def complete_json(self, *, system_prompt, user_payload, validate, response_schema=None, **kw):
         name = response_schema["name"]
         self.calls.append(name)
+        self.requests.append(dict(name=name, prompt=system_prompt, payload=user_payload, images=kw.get("images", [])))
         if name == "localization_frame":
             cands = user_payload["candidates"]
             pick = lambda kind, nm: next(c["id"] for c in cands if c["kind"] == kind and c["name"] == nm)
@@ -111,6 +113,15 @@ class FakeModel:
                 part = dict(base, method="feature", confidence="high", args=dict(args, candidate=self.bridge),
                             parameter={"value": 7, "basis": "data_measurement", "justification": "deck width", "report_area_ha": None})
             ans = {"segment": seg, "parts": [part]}
+            if "visual_observations" in response_schema["schema"]["properties"]["parts"]["items"]["properties"]:
+                part["visual_observations"] = []
+                if kw.get("images"):
+                    source = user_payload["image_sources"][0]
+                    part["evidence_type"] = "mixed"
+                    part["reasoning"] = f"Test observation from {source['source_id']}"
+                    part["visual_observations"] = [{"source_id": source["source_id"],
+                        "observation": "A red rectangle is visible.", "date_relevance": "unknown date",
+                        "identification_method": "synthetic page; no geographic inference"}]
         else:
             ans = {"status": "pass", "summary": "ok", "issues": []}
         validate(ans)
@@ -193,6 +204,73 @@ class LocalizationStageTests(TestCase):
         self.assertEqual((quote["pdf_page"], quote["printed_page"]), (2, 137))
         captions = json.loads((run.raw / "report_captions.json").read_text(encoding="utf-8"))
         self.assertEqual(captions[0]["printed_page"], 44)
+        self.assertIn("belongs to text page 2", localizer._verify_quote(3, "Der Murgang erreichte"))
+
+    def test_vision_localize_end_to_end(self):
+        import csv
+        from PIL import Image
+        from multi_hazard_pipeline.agents.localization_agent import localize_run
+
+        picture = Image.new("RGB", (160, 120), "red")
+        picture.save(self.tmp / "report.pdf", save_all=True, append_images=[picture, picture, picture])
+        picture.close()
+        before = (self.pipe / "final_rows.json").read_bytes()
+        model = FakeModel()
+        res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, log=lambda m: None)
+        self.assertEqual(res["status"], "delivered", res.get("build"))
+        self.assertEqual(model.calls, ["localization_frame"] + ["segment_placement"] * 3 + ["localization_review"] * 3)
+        self.assertTrue(all(len(r["images"]) == 4 for r in model.requests))
+        placements = [r for r in model.requests if r["name"] == "segment_placement"]
+        reviews = [r for r in model.requests if r["name"] == "localization_review"]
+        self.assertEqual([r["payload"]["image_sources"][0]["file_page"] for r in placements], [1, 3, 2])
+        self.assertEqual([r["images"] for r in placements], [r["images"] for r in reviews])
+        loc = self.pipe / "localization"
+        inventory = json.loads((loc / "llm/image_inventory.json").read_text(encoding="utf-8"))
+        self.assertIsNone(inventory["sources"][3]["page"])  # image-only page has no invented text-page mapping
+        self.assertEqual(inventory["uninspected"], [])
+        self.assertEqual(len(list((loc / "llm/images").glob("*.jpg"))), 4)
+        with (loc / "outputs/segments_evidence.csv").open(encoding="utf-8-sig", newline="") as f:
+            evidence = list(csv.DictReader(f))
+        self.assertTrue(all(r["evidence_type"] == "mixed" for r in evidence))
+        self.assertTrue(all("A red rectangle" in r["visual_observations_json"] for r in evidence))
+        self.assertTrue(all(r["placement"] != "documented" for r in evidence))
+        report = (loc / "outputs/data_report.md").read_text(encoding="utf-8")
+        self.assertIn("vision-assisted", report)
+        self.assertNotIn("Text-only run", report)
+        self.assertIn("file page 3", report)
+        self.assertIn("3 imported text-page records", report)
+        self.assertNotIn("base64,", (loc / "llm/segment_2.json").read_text(encoding="utf-8"))
+        self.assertEqual((self.pipe / "final_rows.json").read_bytes(), before)
+
+    def test_explicit_text_only(self):
+        from unittest.mock import patch
+        from multi_hazard_pipeline.agents.localization_agent import localize_run
+
+        model = FakeModel()
+        with patch("multi_hazard_pipeline.agents.localization_vision.ReportImages", side_effect=AssertionError("must not render")):
+            result = localize_run(self.pipe, self.pkg, client=model, vision=False, browser_check=False, log=lambda m: None)
+        self.assertEqual(result["status"], "delivered")
+        self.assertFalse(any(r["images"] for r in model.requests))
+
+    def test_rejects_unattached_visual_reference(self):
+        from multi_hazard_pipeline.agents.localization_agent import Localizer
+
+        class InvalidVisualModel(FakeModel):
+            def complete_json(self, **kwargs):
+                validate = kwargs.pop("validate")
+                answer = super().complete_json(validate=lambda a: None, **kwargs)
+                if kwargs["response_schema"]["name"] == "segment_placement":
+                    answer["parts"][0]["visual_observations"] = [{"source_id": "image-9999", "observation": "invented",
+                        "date_relevance": "unknown", "identification_method": "none"}]
+                validate(answer)
+                return answer
+
+        localizer = Localizer(self.pipe, self.pkg, InvalidVisualModel(), log=lambda m: None)
+        localizer.prepare()
+        localizer.build_facts()
+        localizer.frame_call()
+        with self.assertRaisesRegex(ValueError, "was not attached"):
+            localizer.segment_call(localizer.run.segments[0])
 
     def test_unapproved_run_is_refused(self):
         from multi_hazard_pipeline.agents.localization_agent import localize_run
@@ -238,6 +316,80 @@ class RunPageTests(TestCase):
         run.config = {"printed_page_map": {"1": 10, "2": 10}}
         with self.assertRaisesRegex(ValueError, "multiple PDF pages"):
             run.pdf_page(10)
+
+
+class VisionSourceTests(TestCase):
+    def test_companion_pdf_mapping_limit_and_cache(self):
+        from PIL import Image
+        from unittest.mock import patch
+        from multi_hazard_pipeline.agents.localization_vision import ReportImages
+        from multi_hazard_pipeline.vision import load_images
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with Image.new("RGB", (80, 100), "red") as red, Image.new("RGB", (80, 100), "blue") as blue:
+                red.save(root / "report.pdf", save_all=True, append_images=[red] * 9)
+                blue.save(root / "companion.pdf")
+            pages = [{"pdf_page": 1, "file": "report.pdf", "file_page": 7, "printed_page": 133},
+                     {"pdf_page": 2, "file": "companion.pdf", "file_page": 1, "printed_page": 44}]
+            reports = ReportImages({"inputs": [{"path": str(root / f)} for f in ("report.pdf", "companion.pdf")]},
+                                   pages, root / "llm/images", lambda m: None)
+            with patch("multi_hazard_pipeline.agents.localization_vision.load_images", wraps=load_images) as render:
+                images, sources = reports.attach(reports.select([2, 1]))
+                count = render.call_count
+                repeated, _ = reports.attach([s["source_id"] for s in sources])
+                self.assertEqual(render.call_count, count)
+            self.assertEqual(len(images), 8)
+            self.assertEqual(images, repeated)
+            self.assertEqual([(s["filename"], s["file_page"], s["page"], s["printed_page"]) for s in sources[:2]],
+                             [("companion.pdf", 1, 2, 44), ("report.pdf", 7, 1, 133)])
+            self.assertEqual([s["file_page"] for s in sources[2:4]], [6, 8])
+            self.assertEqual(len(reports.summary()["uninspected"]), 3)
+
+    def test_render_failure_is_recorded_and_not_retried(self):
+        from PIL import Image
+        from unittest.mock import patch
+        from multi_hazard_pipeline.agents.localization_vision import ReportImages
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with Image.new("RGB", (50, 50)) as pic:
+                pic.save(root / "picture.png")
+            reports = ReportImages({"inputs": [{"path": str(root / "picture.png")}]}, [], root / "llm/images", lambda m: None)
+            with patch("multi_hazard_pipeline.agents.localization_vision.load_images", side_effect=ValueError("bad image")) as render:
+                self.assertEqual(reports.attach(reports.select([])), ([], []))
+                self.assertEqual(reports.attach(reports.select([])), ([], []))
+                self.assertEqual(render.call_count, 1)
+            self.assertIn("bad image", reports.summary()["errors"][0])
+            self.assertEqual(len(reports.summary()["uninspected"]), 1)
+
+    def test_ambiguous_filenames_are_not_attached(self):
+        from multi_hazard_pipeline.agents.localization_vision import ReportImages
+
+        reports = ReportImages({"inputs": [{"path": "a/report.pdf"}, {"path": "b/report.pdf"}]}, [],
+                               Path("unused"), lambda m: None)
+        self.assertEqual(reports.sources, {})
+        self.assertEqual(len(reports.errors), 2)
+        self.assertTrue(all("ambiguous" in e for e in reports.errors))
+
+    def test_localization_client_configuration(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        from multi_hazard_pipeline.config import DEFAULT_CONFIG
+        from multi_hazard_pipeline.agents.localization_agent import Localizer, localize_run
+
+        config = replace(DEFAULT_CONFIG, llm=replace(DEFAULT_CONFIG.llm, api_base_url="https://text.invalid/v1"))
+        with patch("multi_hazard_pipeline.llm.ChatClient.from_config") as client, patch.object(Localizer, "run_all", return_value={}):
+            localize_run("unused", "package.json", config=config)
+            llm = client.call_args.args[0]
+            self.assertEqual((llm.api_base_url, llm.text_endpoint, llm.max_request_chars),
+                             ("http://llm.igf.oeaw.ac.at/v1", "/responses", 12_000_000))
+            localize_run("unused", "package.json", config=config, vision=False)
+            self.assertEqual(client.call_args.args[0].api_base_url, "https://text.invalid/v1")
+            self.assertEqual(client.call_args.args[0].text_endpoint, "/chat/completions")
+            localize_run("unused", "package.json", config=config, api_base_url="https://custom.invalid/v1", model="vision-model")
+            self.assertEqual(client.call_args.args[0].api_base_url, "https://custom.invalid/v1")
+            self.assertEqual(client.call_args.args[0].model, "vision-model")
 
 
 class NameMatchingTests(TestCase):

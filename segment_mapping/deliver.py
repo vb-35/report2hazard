@@ -322,8 +322,12 @@ def write_report(run: Run, validation: dict, map_check: dict | None) -> Path:
     visuals = read_json(run.raw / "visual_evidence.json", [])
     georefs = read_json(run.raw / "georeferencing.json", {})
     N = lambda k: [notes[k], ""] if notes.get(k) else []
+    page_description = (f"{len(run.pages())} imported text-page records; evidence PDF page numbers are localization IDs, "
+                        "which can differ from source-file pages. Visual source-file pages are listed under Use / method"
+                        if run.config.get("pipeline_run") else
+                        f"{len(run.pages())} PDF pages; printed page = PDF page + {run.page_offset}")
     L = [f"# {spec.get('event') or run.config.get('event', '')} — GIS placement report", "",
-         f"Report: `{run.report_path.name}` ({len(run.pages())} PDF pages; printed page = PDF page + {run.page_offset}). "
+         f"Report: `{run.report_path.name}` ({page_description}). "
          f"CRS: {run.crs} {_crs_name(run)}. Built {today()} with segment_mapping {__version__}.", "",
          f"**{len(g)} polygon parts cover {g.seg_id.nunique()} of {len(run.segments)} segments; {int((g.is_hypo == 1).sum())} parts are hypotheses (is_hypo = 1).** "
          "Overlaps between parts are intentional.", ""]

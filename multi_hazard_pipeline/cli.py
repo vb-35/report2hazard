@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG
@@ -30,6 +31,15 @@ def parser() -> argparse.ArgumentParser:
     split = subcommands.add_parser("split", help="split a PDF collection into event-report PDFs")
     split.add_argument("input_pdf")
     split.add_argument("output_dir", nargs="?", default="results/split")
+    vision = subcommands.add_parser("analyze-image", help="analyze an image or selected PDF pages using vision")
+    vision.add_argument("input_file")
+    vision.add_argument("--pages", help="1-based PDF page numbers, comma-separated; required for PDFs (up to 8)")
+    vision.add_argument("--question", default="Describe the visible hazard processes, figures and map evidence.")
+    vision.add_argument("--api-base-url", default="http://llm.igf.oeaw.ac.at/v1")
+    vision.add_argument("--model", default=DEFAULT_CONFIG.llm.model)
+    vision.add_argument("--max-dimension", type=int, default=1600, help="longest image side in pixels (256-4096)")
+    vision.add_argument("--max-output-tokens", type=int, default=4096, help="includes reasoning tokens")
+    vision.add_argument("--output", help="save JSON to a new file; otherwise print JSON")
     approve = subcommands.add_parser("approve", help="approve an evaluation-passed candidate")
     approve.add_argument("artifact_dir")
     approve.add_argument("--comment", default="")
@@ -43,13 +53,16 @@ def parser() -> argparse.ArgumentParser:
     )
     correct.add_argument("--segments", default="", help="comma-separated segment IDs")
     correct.add_argument("--comment", default="")
-    localize = subcommands.add_parser("localize", help="place the segments of an approved run on a map (text-only, constrained)")
+    localize = subcommands.add_parser("localize", help="place approved segments on a map using text and report images")
     localize.add_argument("artifact_dir")
     localize.add_argument("--package", required=True, help="spatial package JSON (layers, rasters, roles, name fields)")
     localize.add_argument("--segments-table", help="TSV/CSV segment table to map instead of the approved rows")
     localize.add_argument("--only", default="", help="comma-separated segment IDs (partial run, for testing)")
     localize.add_argument("--no-review", action="store_true", help="skip the self-review call")
     localize.add_argument("--no-browser", action="store_true", help="skip the headless browser map check")
+    localize.add_argument("--text-only", action="store_true", help="disable report images and use the configured text API")
+    localize.add_argument("--api-base-url", help="override the localization service (vision default: http://llm.igf.oeaw.ac.at/v1)")
+    localize.add_argument("--model", help="override the localization model")
     localize.add_argument("--max-output-tokens", type=int, default=24000,
                           help="cap on generated tokens per model call (reasoning included); ends runaway generations")
     serve = subcommands.add_parser("serve", help="start the local human-review interface")
@@ -61,10 +74,34 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
-    if len(raw) == 2 and raw[0] not in {"run", "split", "approve", "reject", "correct", "serve", "localize"}:
+    if len(raw) == 2 and raw[0] not in {"run", "split", "approve", "reject", "correct", "serve", "localize", "analyze-image"}:
         raw = ["run", *raw]
     args = parser().parse_args(raw)
-    if args.command == "run":
+    if args.command == "analyze-image":
+        from .vision import analyze_image
+
+        try:
+            if args.max_output_tokens < 1:
+                raise ValueError("max-output-tokens must be positive")
+            if args.output and Path(args.output).exists():
+                raise ValueError("output already exists; choose a new file")
+            pages = [int(page.strip()) for page in args.pages.split(",")] if args.pages is not None else None
+            config = replace(DEFAULT_CONFIG.llm, api_base_url=args.api_base_url, text_endpoint="/responses",
+                             model=args.model, max_output_tokens=args.max_output_tokens, max_request_chars=12_000_000)
+            result = analyze_image(ChatClient.from_config(config), Path(args.input_file),
+                                   question=args.question, pages=pages, max_dimension=args.max_dimension)
+            serialized = json.dumps(result, indent=2, ensure_ascii=True)
+            if args.output:
+                with Path(args.output).open("x", encoding="utf-8") as stream:
+                    stream.write(serialized + "\n")
+                print(f"Image analysis: {args.output}")
+            else:
+                print(serialized)
+        except Exception as exc:
+            print(f"image analysis failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+    elif args.command == "run":
         result = run_pipeline(args.input_dir, args.output_dir)
     elif args.command == "split":
         try:
@@ -98,7 +135,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = localize_run(args.artifact_dir, args.package, segments_table=args.segments_table, only=only,
                                   review=not args.no_review, browser_check=not args.no_browser,
-                                  max_output_tokens=args.max_output_tokens)
+                                  max_output_tokens=args.max_output_tokens, vision=not args.text_only,
+                                  api_base_url=args.api_base_url, model=args.model)
         except Exception as exc:
             print(f"localization failed: {exc}", file=sys.stderr)
             return 1

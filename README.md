@@ -18,7 +18,7 @@ Verified on Windows with Python 3.13.9 and the Lingua 2.1.1 Windows wheel. Offli
 
 ## Easy interface (Windows)
 
-Before processing reports, set `TW_LLM_API_BASE_URL` in your Windows user environment to your provider's API base URL (including its API version path). The app reads the saved Windows user setting if the launcher's inherited environment lacks it. Restart an already-running interface after changing the setting. No service address is bundled. Browsing existing results does not require this setting.
+Before processing reports, set `TW_LLM_API_BASE_URL` in your Windows user environment to your provider's API base URL (including its API version path). The app reads the saved Windows user setting if the launcher's inherited environment lacks it. Restart an already-running interface after changing the setting. The text pipeline has no bundled service address; selected-image analysis and vision-assisted localization default to the tested IGF vision service. Browsing existing results does not require this setting.
 
 Requires Python 3.11 or newer. From the project folder, create an environment and install dependencies:
 
@@ -67,6 +67,23 @@ python -m multi_hazard_pipeline correct RUN_ARTIFACT_DIR --stage translation --c
 ```
 
 Exit codes are 0 approved, 1 failed, 2 invalid command usage, 3 awaiting human review, 4 revision required, and 5 rejected.
+
+## Selected images and PDF pages
+
+Use `analyze-image` to ask a question about a PNG, JPEG, WebP, or explicitly selected PDF pages. It uses `http://llm.igf.oeaw.ac.at/v1/responses`, the default Qwen3.8 model, and your existing `TW_LLM_API_KEY`. Override the service with `--api-base-url` (include `/v1`, not `/responses`) or the model with `--model`.
+
+```powershell
+.\.venv\Scripts\python.exe -m multi_hazard_pipeline analyze-image "report.pdf" --pages 2,5 --question "What does the map show about sediment deposition?" --output "analysis.json"
+.\.venv\Scripts\python.exe -m multi_hazard_pipeline analyze-image "figure.png" --question "Describe the visible damage."
+```
+
+PDF page numbers start at 1 and refer to file pages, not printed labels. Select up to eight distinct pages; their supplied order is preserved. Pictures are sent as base64 JPEG attachments, with transparency flattened onto white. PDF renders have a longest side of 1600 pixels; larger picture files are reduced to that limit. Use `--max-dimension 2400` for smaller labels (allowed range 256-4096). Large requests above 12 million JSON characters fail locally; use fewer pages or a smaller dimension. The default `--max-output-tokens 4096` includes reasoning; increase it if responses exhaust that budget.
+
+The result contains the model, ordered source filenames/page numbers/render dimensions, an answer, and uncertainties. Without `--output`, JSON is printed; with it, a new file is created and existing files are never overwritten. Only completed, valid JSON answers are accepted; reasoning text is not used as the answer. Source images and PDFs are not modified. This command does not add generated observations to the extraction evidence or approved report artifacts. Web extraction retains its existing behavior; localization uses report images as described below.
+
+For Python callers, `ChatClient` supports `LLMConfig(text_endpoint="/responses", ...)` with `complete_json(..., images=[data_url, ...])`. `multi_hazard_pipeline.vision.load_images` prepares local images or selected PDF pages. Set an appropriate `max_request_chars` for image payloads (the command uses 12,000,000); the text client's default remains 200,000. Structured output, reasoning effort, output-token limits, validation repairs, and usage logging are translated to the Responses format. The existing `/chat/completions` path remains available for text calls. See the [vLLM Responses protocol](https://docs.vllm.ai/en/stable/api/vllm/entrypoints/openai/responses/protocol/).
+
+Offline checks: `python -m unittest test_vision` and `python test_llm.py`.
 
 ## Repeated model comparison
 
@@ -183,4 +200,16 @@ Processing requires `TW_LLM_API_BASE_URL` and `TW_LLM_API_KEY` in the environmen
 
 The [segment_mapping](segment_mapping/README.md) toolkit places approved segments on a map: report inspection, data download (any region; Land Tirol preset), terrain models, figure georeferencing, shapefile + evidence CSV, interactive map, report and reviewer ZIP. All run-specific decisions are data in `scripts/placements.json` ([SPEC.md](segment_mapping/SPEC.md)), so a model never writes code. Generate a task prompt with `python -m segment_mapping prompt ...` (template: `segment_mapping/prompt_template.txt`; see the toolkit README).
 
-To localize an approved run with the pipeline's own text-only model, use `python -m multi_hazard_pipeline localize RUN_DIR --package package.json`. It is a constrained orchestration: a frame call, one call per segment and repairs, with code doing all geometry and rule checks. Results go to `RUN_DIR/localization/` and leave the approved rows unchanged. Tests: `python -m unittest test_segment_mapping`.
+To localize an approved run with text and report pictures, use:
+
+```powershell
+python -m multi_hazard_pipeline localize RUN_DIR --package package.json
+```
+
+Localization uses `http://llm.igf.oeaw.ac.at/v1/responses`, the configured model and existing `TW_LLM_API_KEY`. Override with `--api-base-url` or `--model`. Use `--text-only` to disable pictures and use the configured text API. Missing or unreadable report files/pages are logged and the available text evidence is retained; API failures are reported rather than silently changing modes.
+
+The frame call, segment calls, corrections and self-review receive up to eight rendered pages each (1600 pixels on the longest side). Selection starts with the call's text evidence pages, then neighboring pages in the same source PDF, then remaining report pages in input order. Pages without extracted text are eligible. This is bounded inspection, not a guarantee that every relevant figure has been seen. Review uses each segment's original attachments. Source PDFs must remain at the manifest's input paths; duplicate filenames across inputs are skipped as ambiguous.
+
+Visual observations retain source IDs, source filenames, original file pages and available printed/text page mappings. They appear in the evidence CSV and report, separately from exact text quotations. Geometry and confidence rules still apply: vision helps interpret evidence and choose GIS candidates; it does not georeference or digitize map outlines or measure distances from pixels. Each part still requires a verified original-language quotation.
+
+Results go to `RUN_DIR/localization/` and leave approved rows unchanged. As before, rerunning localization replaces that localization folder. `llm/image_inventory.json` records attached/uninspected pages and rendering failures; `llm/images/` preserves the rendered attachments, and call JSON records their order without base64 payloads. Tests: `python -m unittest test_localization_stage test_segment_mapping test_vision`.
