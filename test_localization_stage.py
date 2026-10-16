@@ -429,3 +429,21 @@ class PointTokenTests(TestCase):
         line = part["geometry"]["terrain"]["channels"][0]["between"]
         self.assertEqual((line["line"], line["from"]), ("S4", {"end": "S4"}))
         self.assertEqual(comp.near_checks, [("S4", "hm:18.3")])
+
+    def test_valley_floor_banks_look_downstream(self):
+        from shapely.geometry import Point
+        from segment_mapping.geom import Evaluator
+        from segment_mapping.templates import Compiler
+
+        # Canonical stream heads north (mouth to source), so downstream left is east.
+        comp = Compiler({"candidates": []}, {"main_stream": "main", "receiving_river": "river"}, {}, False)
+        evaluator = Evaluator(None, {"refs": {"river": {"line": [[0, 0], [0, 100]]}}})
+        for side, inside, outside in [("left", (10, 50), (-10, 50)),
+                                       ("right", (-10, 50), (10, 50)),
+                                       ("east", (10, 50), (-10, 50))]:
+            with self.subTest(side=side):
+                geometry = comp._geometry("valley_floor", dict(river="river", upstream="xy:0,80",
+                                          downstream="xy:0,20", max_dist_m=30, side=side))
+                footprint = evaluator.geom(geometry["terrain"]["within"])
+                self.assertTrue(footprint.contains(Point(inside)))
+                self.assertFalse(footprint.contains(Point(outside)))

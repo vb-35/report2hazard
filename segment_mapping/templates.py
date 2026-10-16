@@ -14,7 +14,7 @@ METHODS = {
     "reach_corridor": "Channel and banks along a stream between two points (args.stream, from_point, to_point), "
                       "terrain band up to a height above the channel (parameter = height_above_channel_m).",
     "valley_floor": "Valley floor along a river between two points (args.river, upstream, downstream), terrain band "
-                    "(parameter = height_above_channel_m), optionally only one side (args.side).",
+                    "(parameter = height_above_channel_m), optionally only one side (args.side; left/right looking downstream).",
     "feature": "One identified candidate feature (args.candidate): a catchment/area as is; a bridge or road line widened "
                "(parameter = width_m); a point given a radius (parameter = width_m used as diameter).",
     "road_stretch": "Stretch of a road candidate (args.candidate R#) of args.length_m centred on args.center; road land "
@@ -246,7 +246,9 @@ class Compiler:
             self.near_checks.extend((river, tok) for tok in (a["upstream"], a["downstream"]) if str(tok).startswith("hm:"))
             within = {"buffer": {"geom": line, "distance": float(a["max_dist_m"] or 300), "cap": "flat"}}
             if a["side"]:
-                within = {"intersection": [within, {"half_plane": {"line": line, "side": a["side"], "extent_m": 2000, "end_extension_m": 0}}]}
+                # Streams and between() run mouth-to-source; bank names look downstream.
+                side = {"left": "right", "right": "left"}.get(a["side"], a["side"])
+                within = {"intersection": [within, {"half_plane": {"line": line, "side": side, "extent_m": 2000, "end_extension_m": 0}}]}
             return {"terrain": {"channels": [line], "max_dist_m": float(a["max_dist_m"] or 300), "within": within, "height_m": P}}
         if m == "feature":
             cid = self._cand(a["candidate"])
