@@ -168,6 +168,32 @@ class LocalizationStageTests(TestCase):
         self.assertEqual(manifest["localization"]["status"], "delivered")
         self.assertIn("Text-only run", (loc / "outputs/data_report.md").read_text(encoding="utf-8"))
 
+    def test_prepare_preserves_noncontiguous_pages_and_basemaps(self):
+        from multi_hazard_pipeline.agents.localization_agent import Localizer
+        from segment_mapping.report import resolve_quote
+
+        page_map = {"1": 133, "2": 137, "3": 44}
+        basemaps = [{"name": "Provided map", "url": "https://example.org/{z}/{x}/{y}.png", "attr": "Test"}]
+        manifest = json.loads((self.pipe / "manifest.json").read_text(encoding="utf-8"))
+        manifest["localization_input"] = {"printed_page_map": page_map, "basemaps": basemaps}
+        write_json(self.pipe / "manifest.json", manifest)
+        translated = json.loads((self.pipe / "translated.json").read_text(encoding="utf-8"))
+        translated["chunks"][2].update(file="report_context.pdf", page=1)
+        write_json(self.pipe / "translated.json", translated)
+
+        localizer = Localizer(self.pipe, self.pkg, FakeModel(), log=lambda m: None)
+        localizer.prepare()
+        run = Run(self.pipe / "localization")
+        self.assertEqual(run.config["printed_page_map"], page_map)
+        self.assertEqual(run.config["basemaps"], basemaps)
+        self.assertEqual([p["printed_page"] for p in run.pages()], [133, 137, 44])
+        self.assertEqual((run.pages()[2]["file"], run.pages()[2]["file_page"]), ("report_context.pdf", 1))
+        quote = resolve_quote(run, {"printed_page": 137, "text": "Der Murgang erreichte"})
+        self.assertTrue(quote["verified"])
+        self.assertEqual((quote["pdf_page"], quote["printed_page"]), (2, 137))
+        captions = json.loads((run.raw / "report_captions.json").read_text(encoding="utf-8"))
+        self.assertEqual(captions[0]["printed_page"], 44)
+
     def test_unapproved_run_is_refused(self):
         from multi_hazard_pipeline.agents.localization_agent import localize_run
         from multi_hazard_pipeline.errors import PipelineError
@@ -194,6 +220,24 @@ class LocalizationStageTests(TestCase):
         self.assertEqual((cp["placement"], cp["is_hypo"], cp["confidence"], cp["rule_5d"]), ("modelled", 1, "low", True))
         with self.assertRaises(TemplateError):  # no stationing in the frame
             comp.point("hm:4")
+
+
+class RunPageTests(TestCase):
+    def test_constant_offset_is_backward_compatible(self):
+        run = Run(".")
+        run.config = {"printed_page_offset": 9}
+        self.assertEqual((run.printed(2), run.pdf_page(11)), (11, 2))
+
+    def test_explicit_map_overrides_offset(self):
+        run = Run(".")
+        run.config = {"printed_page_offset": 9, "printed_page_map": {"1": 133, "2": 137, "3": 44}}
+        self.assertEqual((run.printed(2), run.pdf_page(137)), (137, 2))
+
+    def test_duplicate_printed_page_is_ambiguous(self):
+        run = Run(".")
+        run.config = {"printed_page_map": {"1": 10, "2": 10}}
+        with self.assertRaisesRegex(ValueError, "multiple PDF pages"):
+            run.pdf_page(10)
 
 
 class NameMatchingTests(TestCase):

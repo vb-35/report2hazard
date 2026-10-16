@@ -216,6 +216,10 @@ class Localizer:
         run.config = dict(event=segments[0].get("event") or manifest.get("doc_id", ""), report=report, crs=pkg["crs"],
                           printed_page_offset=None, segments=segments, segment_header=header, created=today(), rasters={},
                           mode="text", offline_map=True, pipeline_run=str(self.dir), model=self.config.llm.model)
+        localization_input = manifest.get("localization_input") or {}
+        for key in ("printed_page_map", "basemaps"):
+            if key in localization_input:
+                run.config[key] = deepcopy(localization_input[key])
         run.save_config()
         run.log_command(["localize (multi_hazard_pipeline)", str(self.dir), "--package", str(self.package)])
         import_package(run, self.package)

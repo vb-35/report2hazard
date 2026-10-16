@@ -161,9 +161,18 @@ class Run:
         return int(self.config.get("printed_page_offset") or 0)
 
     def printed(self, pdf_page: int) -> int:
+        pages = self.config.get("printed_page_map") or {}
+        if str(pdf_page) in pages:
+            return int(pages[str(pdf_page)])
         return pdf_page + self.page_offset
 
     def pdf_page(self, printed_page: int) -> int:
+        pages = self.config.get("printed_page_map") or {}
+        matches = [int(p) for p, printed in pages.items() if int(printed) == printed_page]
+        if len(matches) > 1:
+            raise ValueError(f"Printed page {printed_page} maps to multiple PDF pages: {matches}")
+        if matches:
+            return matches[0]
         return printed_page - self.page_offset
 
     def bbox(self, key: str = "bbox"):
