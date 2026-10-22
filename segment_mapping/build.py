@@ -12,10 +12,42 @@ from .runctx import Run, write_json
 
 PLACEMENTS = ("documented", "approximate", "modelled", "hypothesis")
 CONFIDENCE = ("high", "medium", "low")
+OUTCOME_CONFIDENCE = CONFIDENCE + ("unknown",)
+GEOMETRY_ROLES = ("event_extent", "location", "context", "search_area")
+OUTCOME_FIELDS = ["localization_status", "geometry_role", "event_confidence", "location_confidence", "boundary_confidence", "geometry_type"]
+RESULT_FIELDS = ["seg_id", "localization_status", "reason", "event_confidence", "location_confidence", "boundary_confidence"]
+# precision is derived from the methods of the built parts, never declared: how specifically a located segment is placed.
+PRECISION = ("specific", "approximate", "broad", "unresolved")
+SPECIFIC_METHODS = {"feature", "feature_geometry", "location_point", "road_stretch", "report_outline"}
+
+
+def part_precision(part: dict) -> str:
+    """specific: an identified feature or a reach between stated points; approximate: valley floor, elevation band, a
+    whole stream, buildings by proximity or the area of a named place; broad: a whole catchment, point search area or
+    context geometry."""
+    m = part.get("method")
+    if m in ("named_area", "buildings_near"):
+        return "approximate"
+    if part.get("geometry_role") in ("search_area", "context") or m in ("catchment", "point_area"):
+        return "broad"
+    if m in SPECIFIC_METHODS:
+        return "specific"
+    if m in ("reach_corridor", "channel_reach"):
+        a = part.get("method_args") or {}
+        ends = [a.get("from_point"), a.get("to_point")]
+        return "approximate" if set(ends) <= {None, "mouth", "source"} else "specific"
+    if m is None:  # legacy specification without method: fall back on the placement class
+        return {"documented": "specific", "approximate": "approximate", "modelled": "approximate"}.get(part.get("placement"), "broad")
+    return "approximate"
+
+
+def segment_precision(parts: list[dict]) -> str:
+    tiers = [part_precision(p) for p in parts]
+    return min(tiers, key=PRECISION.index) if tiers else "unresolved"
 EVIDENCE_TYPES = ("text", "table", "map", "photograph", "orthophoto", "diagram", "mixed")
 SHP_FIELDS = ["seg_id", "part_id", "part_label", "process", "category", "interact", "phase", "placement", "is_hypo",
               "confidence", "geom_basis", "data_src", "area_ha", "rep_value", "rep_page"]
-EVIDENCE_FIELDS = SHP_FIELDS + [
+EVIDENCE_FIELDS = SHP_FIELDS + OUTCOME_FIELDS + [
     "pdf_pages", "evidence_type", "quotations", "quotations_json", "figure_refs", "visual_observations_json",
     "table_observations_json", "image_date_relevance", "visual_identification_method", "georeferencing_json",
     "georeferencing_limitations", "reasoning", "uncertainty", "alternative_hypotheses", "reason_placement",
@@ -78,8 +110,8 @@ def evaluate_parameter(ev: Evaluator, expr, parameter: dict | None, label: str =
 def sensitivity(ev: Evaluator, expr, values) -> list[dict]:
     out = []
     for v in values:
-        g = polygons_only(ev.geom(expr, v))
-        out.append(dict(value=v, area_ha=round(g.area / 1e4, 6)))
+        g = ev.geom(expr, v)
+        out.append(dict(value=v, area_ha=round(g.area / 1e4, 6) if g.geom_type in ("Polygon", "MultiPolygon") else None))
     return out
 
 
@@ -92,6 +124,20 @@ def _shp_text(v, limit=254) -> str:
     if len(b) <= limit:
         return s
     return b[: limit - 3].decode("utf-8", errors="ignore") + "…"
+
+
+def geojson_data(gdf) -> dict:
+    """Project canonical features, removing polygon remnants collapsed by reprojection."""
+    web = gdf.to_crs(4326)
+    for idx, row in web.iterrows():
+        geom = row.geometry
+        # A valid, nearly zero-width hole can collapse to a line in longitude/latitude.
+        if not geom.is_valid and geom.geom_type in ("Polygon", "MultiPolygon"):
+            geom = polygons_only(geom)
+        if geom.is_empty or not geom.is_valid or geom.geom_type != row.geometry.geom_type:
+            raise SpecError(f"{row['part_id']}: GeoJSON reprojection produced invalid, empty or changed geometry type")
+        web.at[idx, web.geometry.name] = geom
+    return json.loads(web.to_json(drop_id=True))
 
 
 def _jsonable(v):
@@ -151,6 +197,22 @@ def classify_issues(part: dict, built: dict, visuals: dict, tables: dict, georef
         E(f"placement must be one of {PLACEMENTS}")
     if conf not in CONFIDENCE:
         E(f"confidence must be one of {CONFIDENCE}")
+    geometry_type = built.get("geometry_type")
+    role = part.get("geometry_role", "event_extent" if geometry_type in (None, "Polygon", "MultiPolygon") else "location")
+    if role not in GEOMETRY_ROLES:
+        E(f"geometry_role must be one of {GEOMETRY_ROLES}")
+    if role == "event_extent" and geometry_type is not None and geometry_type not in ("Polygon", "MultiPolygon"):
+        E("event_extent requires a polygon; points and lines represent locations")
+    boundary = part.get("boundary_confidence", "unknown")
+    if role != "event_extent" and boundary != "unknown":
+        E("location/context/search_area requires unknown boundary_confidence")
+    if boundary == "high" and pl != "documented":
+        E("high boundary_confidence requires a documented outline")
+    if part.get("rule_5d") and boundary not in ("low", "unknown"):
+        E("an assumed extent requires low or unknown boundary_confidence")
+    for field in ("event_confidence", "location_confidence", "boundary_confidence"):
+        if field in part and part[field] not in OUTCOME_CONFIDENCE:
+            E(f"{field} must be one of {OUTCOME_CONFIDENCE}")
     if hyp not in (0, 1):
         E("is_hypo must be 0 or 1")
     if conf == "high" and hyp != 0:
@@ -205,8 +267,8 @@ def classify_issues(part: dict, built: dict, visuals: dict, tables: dict, georef
 # ============================================================================ spec structure
 
 KNOWN_KEYS = {
-    "top": {"event", "refs", "chainages", "georef", "visuals", "tables", "parts", "checks", "data_gaps", "report_notes", "readme_notes", "map"},
-    "part": {"part_id", "seg_id", "part_label", "geometry", "parameter", "placement", "is_hypo", "confidence", "rule_5d", "evidence_type",
+    "top": {"segment_results", "event", "refs", "chainages", "georef", "visuals", "tables", "parts", "checks", "data_gaps", "report_notes", "readme_notes", "map"},
+    "part": {"report_area_ha", "geometry_role", "event_confidence", "location_confidence", "boundary_confidence", "part_id", "seg_id", "part_label", "geometry", "parameter", "placement", "is_hypo", "confidence", "rule_5d", "evidence_type",
              "figures", "georef", "tables", "quotes", "visual_notes", "image_date_relevance", "visual_identification_method",
              "georeferencing_limitations", "geom_basis", "data_src", "rep_value", "rep_page", "reasoning", "uncertainty", "alternatives",
              "reason_placement", "reason_is_hypo", "reason_confidence", "fit_from", "checks", "comment", "method", "method_args"},
@@ -218,6 +280,7 @@ KNOWN_KEYS = {
     "report_notes": {"summary", "data", "gaps", "checks", "visual", "sensitivity", "uncertain", "other"},
     "georef": {"figure", "image", "pdf_page", "printed_page", "method", "source_crs", "target_crs", "gcps", "checks", "limitations"},
 }
+KNOWN_KEYS["part"].add("georeferencing_assessment")
 
 
 def spec_key_issues(spec: dict) -> list[str]:
@@ -273,7 +336,6 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
     spec = run.spec()
     ev = Evaluator(run, spec)
     seg_ids = [s["seg_id"] for s in run.segments]
-    int_ids = all(s.isdigit() for s in seg_ids)
     visuals = {v["figure"]: v for v in visual_ledger(run, spec)}
     tables = {t["table"]: t for t in table_ledger(run, spec)}
     errors, warns = [], spec_key_issues(spec)
@@ -311,9 +373,13 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
         built: dict = {}
         try:
             g, fit = evaluate_parameter(ev, part["geometry"], part.get("parameter"), label=pid)
-            g = polygons_only(g)
+            if g.geom_type not in ("Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"):
+                raise SpecError(f"unsupported geometry type {g.geom_type}")
+            if not g.is_valid:
+                raise SpecError("invalid geometry")
             if g.is_empty:
                 raise SpecError("geometry is empty after evaluation (check limits/clips)")
+            built["geometry_type"] = g.geom_type
             built["fit"] = fit
             par = part.get("parameter") or {}
             vals = list(par.get("sensitivity", []))
@@ -343,15 +409,25 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
                     fit_from[r] = ev.ref_fits[r]
                 else:
                     errors.append(f"{pid}: fit_from {r!r} is not a fitted ref")
-        area = g.area / 1e4
+        area = g.area / 1e4 if g.geom_type in ("Polygon", "MultiPolygon") else None
+        report_area = part.get("report_area_ha")
+        if isinstance(report_area, (int, float)) and report_area > 0:
+            if area is None:
+                warns.append(f"{pid}: report area {report_area} ha cannot validate a point or line location")
+            elif abs(area - report_area) / report_area > 0.25:
+                warns.append(f"{pid}: measured area {area:.4f} ha differs by more than 25% from report area {report_area} ha; review extent")
         pages_pdf = sorted({q["pdf_page"] for q in built["quotes"] if q.get("pdf_page")} |
                            {int(visuals[str(f)]["pdf_page"]) for f in part.get("figures", []) if str(f) in visuals and visuals[str(f)].get("pdf_page")})
-        attrs = dict(seg_id=int(sid) if int_ids else sid, part_id=pid, part_label=part.get("part_label", ""),
+        attrs = dict(seg_id=sid, part_id=pid, part_label=part.get("part_label", ""),
                      process=seg["process"], category=seg["category"], interact=seg["interact"], phase=seg["phase"],
                      placement=part.get("placement"), is_hypo=int(part.get("is_hypo", 1)), confidence=part.get("confidence"),
-                     geom_basis=part.get("geom_basis", ""), data_src=part.get("data_src", ""), area_ha=round(area, 6),
+                     geom_basis=part.get("geom_basis", ""), data_src=part.get("data_src", ""), area_ha=round(area, 6) if area is not None else None,
                      rep_value=str(part.get("rep_value", "")), rep_page=str(part.get("rep_page", "")))
-        features.append({**{k: (_shp_text(v) if isinstance(v, str) else v) for k, v in attrs.items()}, "geometry": g})
+        attrs.update(localization_status="located", geometry_role=part.get("geometry_role", "event_extent" if g.geom_type in ("Polygon", "MultiPolygon") else "location"),
+                     event_confidence=part.get("event_confidence", "unknown"),
+                     location_confidence=part.get("location_confidence", part.get("confidence", "unknown")),
+                     boundary_confidence=part.get("boundary_confidence", "unknown"), geometry_type=g.geom_type)
+        features.append({**attrs, "geometry": g})
         if len(attrs["geom_basis"].encode()) > 254 or len(attrs["data_src"].encode()) > 254:
             warns.append(f"{pid}: geom_basis/data_src longer than 254 bytes; truncated in the shapefile, full text in the CSV")
         fits = {**({"part": built["fit"]} if built.get("fit") else {}), **fit_from}
@@ -369,7 +445,9 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
             "table_observations_json": _jsonable([tables[str(t)] for t in part.get("tables", []) if str(t) in tables]),
             "image_date_relevance": part.get("image_date_relevance", ""),
             "visual_identification_method": part.get("visual_identification_method", ""),
-            "georeferencing_json": _jsonable({gid: georefs[gid].info() for gid in part.get("georef", []) if gid in georefs}),
+            "georeferencing_json": _jsonable({**{gid: georefs[gid].info() for gid in part.get("georef", []) if gid in georefs},
+                **({str(part.get("figures", [pid])[0]): {**part["georeferencing_assessment"].get("georef", {}),
+                    "assessment": part["georeferencing_assessment"]}} if part.get("georeferencing_assessment") else {})}),
             "georeferencing_limitations": part.get("georeferencing_limitations", "") or "; ".join(
                 f"{gid}: RMS {georefs[gid].rms:.2f} m, max {georefs[gid].max_res:.2f} m, "
                 + (", ".join(f"check {c.get('label', '')} {c['error_m']:.2f} m" for c in georefs[gid].checks) or "no independent check")
@@ -389,11 +467,9 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
             "checks_json": _jsonable(checks),
         })
 
-    if not only:
-        covered = {str(e["seg_id"]) for e in evidence}
-        for s in seg_ids:
-            if s not in covered:
-                errors.append(f"segment {s} has no part (rule 6: every segment must be placed)")
+    outcomes, outcome_errors = segment_outcomes(run.segments, spec, evidence, only=only)
+    errors += outcome_errors
+    warns += footprint_warnings(features)
 
     global_checks = []
     for c in spec.get("checks", []):
@@ -409,15 +485,29 @@ def build(run: Run, only: list[str] | None = None, write: bool = True) -> dict:
             errors.append(f"chainage {name}: {exc}")
 
     result = dict(parts=len(features), errors=errors, warnings=warns)
-    if not write or not features:
+    result["segment_results"] = outcomes
+    if not write:
         return result
 
-    gdf = gpd.GeoDataFrame(features, geometry="geometry", crs=run.crs)[SHP_FIELDS + ["geometry"]]
+    gdf = gpd.GeoDataFrame(features, geometry="geometry", crs=run.crs) if features else gpd.GeoDataFrame(columns=SHP_FIELDS + OUTCOME_FIELDS + ["geometry"], geometry="geometry", crs=run.crs)
     run.out.mkdir(parents=True, exist_ok=True)
+    web = geojson_data(gdf)
     for ext in ("shp", "shx", "dbf", "prj", "cpg"):
         (run.out / f"segments.{ext}").unlink(missing_ok=True)
-    gdf.to_file(run.out / "segments.shp", driver="ESRI Shapefile", encoding="UTF-8", engine="pyogrio")
-    (run.out / "segments.cpg").write_text("UTF-8", encoding="ascii")
+    # GeoJSON is the canonical mixed-geometry export; shapefile is a polygon-only compatibility export.
+    write_json(run.out / "segments.geojson", web)
+    polygons = gdf[gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])][SHP_FIELDS + ["geometry"]].copy()
+    if len(polygons):
+        for col in SHP_FIELDS:
+            if polygons[col].dtype == object:
+                polygons[col] = polygons[col].map(lambda v: _shp_text(v) if isinstance(v, str) else v)
+        polygons.to_file(run.out / "segments.shp", driver="ESRI Shapefile", encoding="UTF-8", engine="pyogrio")
+        (run.out / "segments.cpg").write_text("UTF-8", encoding="ascii")
+    write_json(run.out / "segment_results.json", outcomes)
+    with (run.out / "segment_results.csv").open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RESULT_FIELDS + ["precision"])
+        writer.writeheader()
+        writer.writerows({k: row.get(k, "") for k in RESULT_FIELDS + ["precision"]} for row in outcomes)
     with (run.out / "segments_evidence.csv").open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=EVIDENCE_FIELDS)
         w.writeheader()
@@ -451,3 +541,82 @@ def _round(v):
     if isinstance(v, list):
         return [_round(x) for x in v]
     return v
+
+
+def segment_outcomes(segments, spec, evidence, only=None):
+    """Validate explicit outcomes, or infer compatible outcomes for legacy specs."""
+    errors, rows = [], []
+    explicit = "segment_results" in spec
+    declared = spec.get("segment_results", [])
+    if not isinstance(declared, list):
+        return [], ["segment_results must be a list"]
+    lookup = {}
+    ids = {str(s["seg_id"]) for s in segments}
+    for row in declared:
+        if not isinstance(row, dict):
+            errors.append("segment_results entry must be an object")
+            continue
+        sid = str(row.get("seg_id", ""))
+        if sid in lookup:
+            errors.append(f"segment {sid}: duplicate localization outcome")
+        if sid not in ids:
+            errors.append(f"segment {sid}: unknown localization outcome ID")
+        for field in RESULT_FIELDS[1:]:
+            if field not in row:
+                errors.append(f"segment {sid}: localization outcome missing {field}")
+        lookup[sid] = row
+    for seg in segments:
+        sid = str(seg["seg_id"])
+        parts = [e for e in evidence if str(e["seg_id"]) == sid]
+        row = dict(lookup.get(sid, {}))
+        if explicit and not row:
+            errors.append(f"segment {sid}: missing localization outcome")
+        row = {"seg_id": sid, "localization_status": "located" if parts else "unresolved",
+               "reason": "Legacy specification: geometry provided" if parts else "No localized geometry", **row}
+        row["seg_id"] = sid
+        for field in RESULT_FIELDS[3:]:
+            row.setdefault(field, "unknown")
+            if row[field] not in OUTCOME_CONFIDENCE:
+                errors.append(f"segment {sid}: invalid {field}")
+        status = row["localization_status"]
+        if status not in ("located", "unresolved"):
+            errors.append(f"segment {sid}: invalid localization_status")
+        if not str(row.get("reason", "")).strip():
+            errors.append(f"segment {sid}: localization reason is required")
+        if explicit and status == "unresolved" and any(row[field] != "unknown" for field in ("location_confidence", "boundary_confidence")):
+            errors.append(f"segment {sid}: unresolved requires unknown location_confidence and boundary_confidence")
+        if explicit and status == "located" and row["location_confidence"] == "unknown":
+            errors.append(f"segment {sid}: located requires supported location_confidence")
+        if explicit and parts and all(p.get("geometry_role", "event_extent") != "event_extent" for p in parts) and row["boundary_confidence"] != "unknown":
+            errors.append(f"segment {sid}: locations/context/search areas require unknown boundary_confidence")
+        if status == "unresolved" and any(str(p.get("seg_id")) == sid for p in spec.get("parts", [])):
+            errors.append(f"segment {sid}: unresolved outcome must have no parts")
+        if status == "located" and not parts and not only:
+            errors.append(f"segment {sid}: located outcome has no built part")
+        if not explicit and not parts and not only:
+            errors.append(f"segment {sid} has no part (legacy specification)")
+        row["precision"] = segment_precision([p for p in spec.get("parts", []) if str(p.get("seg_id")) == sid]) if status == "located" else "unresolved"
+        rows.append(row)
+    return rows, errors
+
+
+def footprint_warnings(features):
+    """Flag suspicious reuse without penalizing broad condition or context geometries."""
+    warns = []
+    for i, part in enumerate(features):
+        if part.get("geometry_role", "event_extent") != "event_extent":
+            continue
+        proc = str(part.get("process", "")).lower()
+        broad = any(w in proc for w in ("rain", "precip", "condition", "trigger", "snowmelt"))
+        if broad:
+            continue
+        basis = str(part.get("geom_basis", "")).lower()
+        if any(w in proc for w in ("channel", "erosion", "debris flow", "sediment transport")) and any(w in basis for w in ("whole catchment", "entire catchment", "whole basin", "entire basin")):
+            warns.append(f"{part['part_id']}: channel-process event extent uses a whole catchment; verify that this is an event footprint")
+        for other in features[:i]:
+            other_proc = str(other.get("process", "")).lower()
+            if other.get("geometry_role", "event_extent") != "event_extent" or any(w in other_proc for w in ("rain", "precip", "condition", "trigger", "snowmelt")):
+                continue
+            if str(part["seg_id"]) != str(other["seg_id"]) and proc != other_proc and part["geometry"].equals(other["geometry"]):
+                warns.append(f"{part['part_id']} / {other['part_id']}: identical footprints across different processes; verify independent event evidence")
+    return warns

@@ -1,15 +1,15 @@
-# Design: text-only localization stage (constrained orchestrator)
+# Design: localization stage (constrained orchestrator)
 
 Status: **implemented (phases 1-3, CLI)**: `python -m multi_hazard_pipeline localize`. The web review (phase 4) is not implemented yet. Decisions: the stage runs after approval; segments come from the approved run or any provided table (`--segments-table`); packages use the JSON format below; CLI first.
 
 ## 1. Goal and assumptions
 
-Place every approved segment of a pipeline run on a map. Use the pipeline's own LLM (chat completions, JSON schema, no tools, no images) inside a fixed orchestration. Python owns the control flow, the geometry and the validation. The model only makes bounded choices in small, schema-checked JSON answers.
+Assess every approved segment for a supported location; retain an explicit unresolved result where evidence is insufficient. Use schema-checked model calls with text and bounded report-image attachments inside a fixed orchestration. Optional declared GIS acquisition and reviewed outline candidates remain controlled by Python. Python owns the control flow, the geometry and the validation. The model only makes bounded choices in small, schema-checked JSON answers.
 
 Assumptions agreed so far:
 
-- **All spatial data is provided upfront** as a local *spatial package*. There are no downloads, so the stage can run offline.
-- **Text-only is the default.** Figures and maps are known only through their captions and the surrounding text, and nothing is georeferenced from images. An image mode can be added later for a vision model.
+- **Core GIS inputs are provided** as a local spatial package (catchment, streams, DEM). `--allow-network` optionally enables bounded requests to caller-declared acquisition providers; it does not enable generic web search or invented source URLs.
+- **Vision is the CLI default.** Calls receive bounded report-page attachments; `--text-only` disables them. Image inspection does not authorize invented coordinates or pixel measurements. `--figure-manifest` supplies separately reviewed explicit outlines through checked georeferencing.
 - **The `segment_mapping` toolkit is the execution engine** *(exists)*. The orchestrator writes `scripts/placements.json` and calls `build` / `deliver`. The same spec can therefore come from this stage or from a vision-capable agent run, and the results compare directly.
 
 ## 2. Position in the pipeline
@@ -25,7 +25,7 @@ extraction → translation → segmentation → categorization → candidate →
 - Command: `python -m multi_hazard_pipeline localize RUN_DIR --package SPATIAL_PACKAGE.json`. A web button comes in phase 4.
 - It runs only on `status == approved` runs and never changes `final_rows.*`, segment text or classifications.
 - Everything goes into `RUN_DIR/localization/`, which is a normal `segment_mapping` run folder (`run.json`, `data_raw/`, `scripts/placements.json`, `outputs/`). Orchestrator artifacts go in `localization/llm/`.
-- The manifest gains a `localization` block: status, stages `prepare`, `frame`, `segments`, `build`, `self_evaluation`, `spatial_review`, `spatial_export`, round counters and errors. LLM calls are logged in the existing `timings.jsonl`.
+- The manifest gains a `localization` block with completion/failure status, counters, review outcome and output paths. Calls/checkpoints are recorded in `localization/llm/`; timings use `llm/timings.jsonl`. Existing localization folders require `--resume`, matching input/settings fingerprints and unchanged sources. Changed inputs require a fresh folder.
 
 Why after approval: segment IDs and texts are final, so a spatial correction can never ripple into the causal chain. Existing runs and reports without spatial data keep their current workflow.
 
@@ -39,7 +39,7 @@ Why after approval: segment IDs and texts are final, so a spatial correction can
 | `segments.json` | Per segment: `evidence[]` with `chunk_id` + exact original-language `quote`, `predecessor_segment_ids`. |
 | `translated.json` | Per page chunk: original `text`, `translated_text` (English), `page`, file. Gives the model English text and the toolkit verifiable original quotes with pages. |
 
-### 3.2 Spatial package (new, provided upfront)
+### 3.2 Spatial package
 
 One JSON manifest per area. It declares roles and name fields, so the deterministic steps work in any region without guessing field names:
 
@@ -72,9 +72,9 @@ One JSON manifest per area. It declares roles and name fields, so the determinis
 ### L0 Prepare (deterministic)
 
 1. Create `localization/` with `init`, using the segment table from `final_rows.json`.
-2. **Report text without the PDF:** write `report_text.json` from `translated.json`, with original text, English text and page. Detect the printed-page offset as today. Captions are parsed from the text, and figures are listed by caption only.
+2. Write `report_text.json` from `translated.json`, retaining original/English text and page provenance. In vision mode, render selected source PDF pages separately and record attachments/uninspected pages and failures; text-page IDs can differ from original file pages.
 3. Import the package layers and rasters into one copy in the run CRS (`import`), then run `inventory`.
-4. Set `run.json` → `mode: "text"`. Validation then forbids `documented` placements, which need an explicit outline the model cannot see, and does not require a visuals ledger.
+4. Record actual image inspection mode and visual observations. Verified outline candidates retain independent alignment and event-interpretation evidence. Without usable image/outline evidence, do not claim a documented boundary.
 
 ### L1 Facts and candidates (deterministic, no LLM)
 
@@ -84,7 +84,17 @@ Code computes everything numeric, so the model never does geometry:
 - **Candidate table.** Each candidate is a short id (`S1` stream, `C1` catchment, `B1` bridge, `R1` road, `P1` place, `K1` road-km marker) with a one-line description: name, length or area, the relation to the main candidates, and the pages where it is mentioned.
 - **Stream facts.** For each mentioned stream: mouth/source elevations, length, and confluences with other mentioned streams, with distance from the mouth along the receiving stream. Also catchment area, elevation range and highest point.
 - **Numeric clues.** hm/km/m/ha/m³/elevation/time expressions with page and snippet (existing `clues` logic).
-- **Per-segment evidence bundle.** The segment's approved quotes, plus the clue passages and mentions on the same pages.
+- **Per-segment evidence bundle.** The segment's approved and linked quotes, plus the clue passages and mentions on the same pages (up to 4 pages).
+- **Deduplication.** The same feature supplied by several layers becomes one candidate with aliases. Bridges record the stream they cross, its station and whether it is the only bridge there, and the road they carry.
+
+### L1b Evidence linking (LLM, batched pages)
+
+Approved evidence says what happened; the statements that locate it (stations, areas, named limits) are often on other
+pages, and a segment table has no evidence at all. Batched calls (about 40 k characters of pages each, without images)
+return up to 6 passages per segment and batch, each with page, exact original-language quote, kind
+(place/station/extent/quantity/timing) and note. Code verifies every quote and drops unverifiable ones; a batch with
+many unverifiable quotes is repaired. The linked passages feed the frame page choice, the segment calls and the review.
+Incidents the report lists as further reports, at other torrents or elsewhere in the municipality are not linked.
 
 ### L2 Frame call (1 LLM call per report)
 
@@ -94,26 +104,16 @@ Code computes everything numeric, so the model never does geometry:
 - the stream facts;
 - the numeric clues that mention the main stream.
 
-**Output (schema):**
-
-```json
-{"main_stream": "S3", "catchment": "C1", "receiving_river": "S7",
- "named_features": [{"report_name": "Lochmure", "candidate": "B2", "basis": "only L13 bridge over S3", "certainty": "inferred"},
-                    {"report_name": "Unterhaus", "candidate": "P4", "basis": "...", "certainty": "named"}],
- "unresolved": [{"report_name": "...", "reason": "not in package"}],
- "chainage": {"unit_m": 100, "anchors": [{"value": 0, "point": "mouth"}, {"value": 18.3, "point": "confluence:S5"}]},
- "valley_limits": {"upstream": "confluence:S9", "downstream": "confluence:S11"},
- "quotes": [{"page": 14, "text": "..."}]}
-```
+**Output:** `main_stream`, `catchment`, optional `receiving_river`, `named_features` (report name, candidate, certainty, basis, page), `chainage_anchors` (value, point, page, quote), `report_numbers` and `notes`. Current strict response schemas are generated in `agents/localization_agent.py`; candidate IDs come only from computed facts.
 
 **Validation:**
 - every id exists, and point tokens are from a fixed grammar (`mouth`, `source`, `confluence:S#`, `feature:B#`, `km:K#`);
 - quotations are verified;
 - anchors are monotone.
 
-Code then compiles `refs` and `chainages` and computes the calibration offsets. If an anchor's offset is above 10 % of its stationed distance, a repair call asks the model to reconsider, giving it the numbers.
+Code then compiles `refs` and `chainages` and computes the calibration offsets. If an anchor's offset exceeds max(150 m, 20% of its stationed distance), a repair call asks the model to reconsider, giving it the numbers.
 
-### L3 Segment calls (1 call per segment; small segments batched in threes)
+### L3 Segment calls (one call per segment)
 
 **Input:**
 - the segment (process, category, phase, evidence quotes in the original language with English);
@@ -122,22 +122,10 @@ Code then compiles `refs` and `chainages` and computes the calibration offsets. 
 - the **method menu** (§5), with the methods allowed for this package;
 - condensed rules 5b/5c/5d/6/8 from the prompt.
 
-**Output (schema), one or more parts:**
-
-```json
-{"segment": 4, "parts": [
-  {"label": "Surge path hm 0-34", "method": "reach_corridor",
-   "args": {"stream": "main", "from": {"hm": 0}, "to": {"hm": 34}, "max_dist_m": 80},
-   "parameter": {"name": "height_above_channel_m", "value": 8, "justification": "deposits up to 8 m (p. 72)"},
-   "report_area_ha": null,
-   "placement": "modelled", "is_hypo": 1, "confidence": "low",
-   "quotes": [{"page": 59, "text": "Ab etwa 22.20 Uhr ..."}],
-   "reasoning": "...", "uncertainty": "...", "alternatives": "...",
-   "reason_placement": "...", "reason_is_hypo": "...", "reason_confidence": "..."}]}
-```
+**Output:** original `segment` ID, `localization_status`, `reason`, independent `event_confidence`, `location_confidence`, `boundary_confidence`, `data_requests`, and zero to four `parts`. Unresolved results contain no parts and unknown location/boundary confidence. Each located part carries its method, args, role, independent confidences, parameter evidence, original-language quotes and classification reasons. See [SPEC.md](SPEC.md#outcomes-and-exports) for compiled outcomes and [README.md](README.md#optional-public-data-acquisition) for acquisition/outline manifest examples.
 
 **Code-enforced consistency, not left to the model:**
-- If the report gives no extent for the method (no `report_area_ha` or length), the part is rule 5d: modelled / low / is_hypo 1. Code adds sensitivity values at ×0.5 and ×1.5 of the chosen value, or method-specific steps. The model only justifies the chosen value.
+- Assumed reconstruction parameters trigger rule 5d: modelled / low / is_hypo 1; a supported native location needs no assumed width. Code adds sensitivity values at ×0.5 and ×1.5 of the chosen value, or method-specific steps. The model only justifies the chosen value.
 - With `report_area_ha`, a terrain method is fitted to the area (±5 %), and the fit is labelled as not independent.
 - `confidence: high` requires `is_hypo: 0` and a frame feature with `certainty: named`.
 - A part's quotes must come from the segment's evidence bundle or be verifiable in the report.
@@ -155,9 +143,9 @@ A reviewer prompt gets the compiled parts table: method, args, classification, a
 
 ### L6 Deliver and spatial review
 
-- `deliver` writes the map, README, report and ZIP. The map needs offline support (§7).
-- In phase 3–4, spatial review is shown on the run page: map and parts table, then approve, reject, or comment per part to trigger an L3 correction.
-- Spatial approval writes `localization/outputs/` as the authoritative spatial export, recorded in the manifest.
+- `deliver` writes canonical mixed `segments.geojson`, an optional polygon-only shapefile, complete result JSON/CSV, evidence, map, README, report and ZIP. Points/lines retain native geometry and null area. Leaflet/data are embedded; web tiles are optional. Entirely unresolved runs remain exportable.
+- Browser-based spatial review with per-part approval/correction remains future work; current review is through the exported map and report.
+- Completion distinguishes `delivered`, `delivered_with_unresolved`, `partial`, `incomplete`, `review_incomplete`, `revision_required`, `build_errors`, `validation_errors`, `failed`. Outstanding issues/failures cannot become ordinary delivered success. Web spatial approval remains future work.
 
 ## 5. Method menu (templates → toolkit expressions)
 
@@ -165,17 +153,21 @@ Each method is a small schema the model fills in. Code compiles it to a `segment
 
 | Method | Args | Compiles to | Classification constraints |
 | --- | --- | --- | --- |
-| `catchment` | `which: main\|C#` | catchment feature | approximate; high if named and unique |
-| `elevation_band` | `min_m`, `max_m`, `within` | `dem_mask` ∩ catchment | modelled; is_hypo 0 only if the report states the elevation |
-| `reach_corridor` | `stream`, `from`, `to` (hm / point token), `max_dist_m`, param `height_above_channel_m` | `terrain` on `reach`/`between` | modelled; rule 5d unless the report gives an area (then fitted) |
+| `catchment` | `candidate: catch\|C#` | catchment feature | approximate; high if named and unique |
+| `elevation_band` | `candidate`, `min_elev_m`, `max_elev_m` | DEM mask within catchment | modelled; report evidence must support the elevation constraint |
+| `reach_corridor` | `stream`, `from_point`, `to_point`, `max_dist_m`; parameter height | terrain band on a reach | modelled; assumed height triggers rule 5d; area comparison unless explicitly fitted |
 | `valley_floor` | `river`, `upstream`, `downstream`, `side` (optional: `north/south/left/right` of a road/river), param height | `terrain` on `between` ∩ optional `half_plane` | as above |
 | `feature` | candidate id (`B#`, `P#`, building id), param `width_m` for lines | layer selection (+ buffer) | approximate; width without a report value → sensitivity |
-| `road_stretch` | road `R#`, centre (point token), `length_m` (report value if given), `use_road_land` or param width | `window` (+ `road_land` ∩) | modelled; length from the report → not 5d |
-| `buildings_near` | point token, `radius_m`, optional `max_count` | buildings within a distance | approximate, is_hypo 1, low (proximity ≠ damage; must say so) |
-| `point_area` | point token, `radius_m` | buffer around a point | **hypothesis**, is_hypo 1, low (last resort) |
-| `expression` | raw toolkit expression | as given | validated like any part; flagged in the report for review |
+| `road_stretch` | road `candidate`, `center`, `length_m`, `use_road_land`; parameter width | road window / land parcels / buffered line | modelled; assumed width triggers rule 5d |
+| `buildings_near` | `center`, `radius_m` | nearby building footprints | is_hypo 1; proximity alone does not prove damage; only when the report identifies the building |
+| `named_area` | `center`, `radius_m` (50-500 m) | buffer around a named place | approximate, always `search_area`, unknown boundary: for "in the area of X", hamlets, farm groups |
+| `point_area` | `center`, parameter radius | buffer around a point | **hypothesis**, `search_area`, is_hypo 1, low |
+| `location_point` | `center` point token | native point | `location`; unknown boundary confidence |
+| `channel_reach` | `stream`, `from_point`, `to_point` | native line reach | `location`; no invented width |
+| `feature_geometry` | `candidate` | native GIS geometry | `location`; feature identity does not establish damage extent |
+| `report_outline` | reviewed candidate ID linked to this segment | preserved verified polygon | documented only after alignment and event/date review |
 
-Point tokens: `mouth`, `source`, `confluence:S#`, `feature:B#`, `km:K#`, `hm:<value>`, `place:P#`. Methods whose role is missing in the package (e.g. no buildings) are left out of the menu, and the gap is reported.
+Point tokens: `mouth`, `source`, `confluence:S#`, `feature:B#`, `km:K#`, `hm:<value>`, `place:P#`. `expression` remains a legacy toolkit template but is not offered to the localization model. Methods whose role is missing in the package (e.g. no buildings) are left out of the menu, and the gap is reported.
 
 ## 6. Prompts and context budget
 
@@ -185,20 +177,20 @@ Point tokens: `mouth`, `source`, `confluence:S#`, `feature:B#`, `km:K#`, `hm:<va
 - **Language:** the model reads English translations, but quotations are always the original-language text from `segments.json` or verified against `report_text.json`.
 - **Logging:** every request and answer is saved in `localization/llm/` (reproducibility, offline debugging).
 
-## 7. Toolkit changes needed
+## 7. Toolkit support
 
 1. `import-text`: report text, translations and pages from pipeline artifacts (no PDF needed).
 2. `import-package` / `package export`: read and write the spatial package manifest (roles, name and id fields, sources).
-3. `mode: text` in `run.json`: validation forbids `documented` without figures, needs no visuals ledger, and the report states that no figures were inspected.
+3. `mode: text` records absent report-image inspection; documented outlines require verified figure evidence rather than inferred photo boundaries.
 4. **Offline map:** Leaflet JS/CSS bundled with the package; base tiles optional (a local hillshade from the DEM as fallback overlay). The map check passes when geometries render without tiles.
 5. `facts` module: name mentions (fuzzy), candidate table with short ids, stream network facts, per-segment evidence bundles.
 6. `templates` module: method schemas → expressions, with the classification constraints of §5.
 
-## 8. Pipeline changes needed
+## 8. Pipeline implementation
 
 - `agents/localization_agent.py`: L0–L5 orchestration on top of `ChatClient.complete_json` (existing retries, repair, timing).
 - `schemas.py`: frame, segment-parts, repair and review response schemas, generated from the method menu.
-- `cli.py`: `localize RUN_DIR --package FILE [--segments 3,4]`. `pipeline.py`: manifest `localization` block and artifact paths.
+- `cli.py`: `localize RUN_DIR --package FILE [--only 3,4] [--resume] [--allow-network] [--figure-manifest FILE]`. `pipeline.py`: manifest `localization` block and artifact paths.
 - Phase 4: `web.py` run page section with a map iframe, parts table, approve/reject and per-part comments.
 
 ## 9. Evaluation
@@ -208,7 +200,16 @@ Point tokens: `mouth`, `source`, `confluence:S#`, `feature:B#`, `km:K#`, `hm:<va
 | Seigesbach (approved run `seigesbach-json-escaping-resume__…` + package built from the Sol data) | Development case. Compare with the vision-agent toolkit run and earlier runs: parts per segment, IoU where comparable, classification agreement, rule violations, report-value deviations. |
 | A second, held-out report (e.g. Schnannerbach or Vals) | No tuning on it. Checks that the prompts and candidate matching generalise. |
 
+`segment_mapping.benchmark` scores a run against reference runs (frontier-model runs treated as approximately correct):
+per segment precision, recall against the majority area, site recall, IoU, area ratio with a scale penalty, and a
+leave-one-out ceiling between the references. Prompt examples must not come from the benchmark report.
+Search areas (`named_area`, `point_area`) state where, not how large: they count for recall and site recall, and for
+precision as the share that holds a reference place; IoU and the area ratio use the extent parts only. This keeps
+reference runs that guess individual damaged buildings from rewarding false precision.
+
 Measures:
+- benchmark score per segment and report;
+- precision tiers (specific/approximate/broad/unresolved);
 - build errors left after repair rounds;
 - repair and review calls;
 - wall time and tokens;
@@ -216,7 +217,7 @@ Measures:
 - unresolved names;
 - reviewer acceptance per part.
 
-Text-only results are expected to be weaker on documented outlines, because there are none, and on photo-identified buildings. This should be reported rather than hidden.
+Text-only results lack direct image interpretation. Coverage is assessed by supported locations and unresolved outcomes, not polygon count. The Seigesbach Abb. 71 pilot remains unresolved because printed CRS and event/date interpretation are unverified and the legend classes conflict; no verified Seigesbach affected-area result is claimed.
 
 ## 10. Phases
 
@@ -225,9 +226,6 @@ Text-only results are expected to be weaker on documented outlines, because ther
 3. **Quality:** L5 self-evaluation, manifest integration, second report.
 4. **UI:** spatial review and approval in the web interface.
 
-## 11. Decisions needed before implementation
+## 11. Established scope
 
-1. **After approval (proposed) or before final approval?** After keeps the existing approval meaning unchanged.
-2. **Segment source:** the approved pipeline segments. These differ from hand-curated tables like the Seigesbach prompt's nine segments. Is that what you want to map?
-3. **Spatial package:** who prepares it, and is the JSON manifest above acceptable? Should the toolkit export one from a preset download?
-4. **Web review in the first version,** or CLI plus map/report files first (proposed)?
+The CLI runs after approval, preserves approved extraction artifacts, accepts an optional external segment table, and uses declared spatial packages. Browser-based spatial approval remains future work. Acquisition and reviewed figures are opt-in inputs; uncertain spatial evidence stays unresolved.

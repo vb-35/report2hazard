@@ -6,6 +6,7 @@ continuous coordinates (a value read off a grid render is used as-is).
 from __future__ import annotations
 
 import ast
+import copy
 import json
 
 import numpy as np
@@ -22,9 +23,15 @@ class Georef:
             raise ValueError(f"georef {gid}: method must be one of {list(METHODS)}")
         if len(gcps) < METHODS[self.method]:
             raise ValueError(f"georef {gid}: {self.method} needs at least {METHODS[self.method]} GCPs, got {len(gcps)}")
+        gcps, checks = copy.deepcopy(gcps), copy.deepcopy(checks)
         self.gcps, self.checks = gcps, checks
         px = np.array([g["pixel"] for g in gcps], float)
         tg = np.array([g["target"] for g in gcps], float)
+        if px.shape != (len(gcps), 2) or tg.shape != px.shape or not np.isfinite(px).all() or not np.isfinite(tg).all():
+            raise ValueError(f"georef {gid}: controls must be finite coordinate pairs")
+        for c in checks:
+            if any(np.asarray(c[k], float).shape != (2,) or not np.isfinite(c[k]).all() for k in ("pixel", "target")):
+                raise ValueError(f"georef {gid}: checkpoints must be finite coordinate pairs")
         self._fit(px, tg)
         pred = self.apply(px)
         res = np.linalg.norm(pred - tg, axis=1)
@@ -50,7 +57,16 @@ class Georef:
         n = len(px)
         if self.method == "affine":
             A = np.c_[px, np.ones(n)]
+            # Centring/scaling prevents large coordinate origins masking rank loss.
+            def rank2(points):
+                centered = points - points.mean(axis=0)
+                scale = np.max(np.abs(centered))
+                return 0 if scale == 0 else np.linalg.matrix_rank(centered / scale)
+            if rank2(px) < 2 or rank2(tg) < 2:
+                raise ValueError(f"georef {self.id}: degenerate affine controls (collinear or coincident)")
             self.M = np.linalg.lstsq(A, tg, rcond=None)[0]  # 3x2
+            if np.linalg.matrix_rank(self.M[:2]) < 2:
+                raise ValueError(f"georef {self.id}: singular affine transform")
         elif self.method == "similarity":
             # image y points down, map y up: reflected similarity X = a x + b y + c ; Y = b x - a y + d
             A = np.zeros((2 * n, 4))

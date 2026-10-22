@@ -63,6 +63,9 @@ def parser() -> argparse.ArgumentParser:
     localize.add_argument("--text-only", action="store_true", help="disable report images and use the configured text API")
     localize.add_argument("--api-base-url", help="override the localization service (vision default: http://llm.igf.oeaw.ac.at/v1)")
     localize.add_argument("--model", help="override the localization model")
+    localize.add_argument("--resume", action="store_true", help="resume saved placements when inputs/settings match; existing outputs are preserved")
+    localize.add_argument("--allow-network", action="store_true", help="allow bounded model-requested public GIS acquisition from configured providers")
+    localize.add_argument("--figure-manifest", help="reviewed georeferenced report outline candidates (JSON)")
     localize.add_argument("--max-output-tokens", type=int, default=24000,
                           help="cap on generated tokens per model call (reasoning included); ends runaway generations")
     serve = subcommands.add_parser("serve", help="start the local human-review interface")
@@ -136,7 +139,8 @@ def main(argv: list[str] | None = None) -> int:
             result = localize_run(args.artifact_dir, args.package, segments_table=args.segments_table, only=only,
                                   review=not args.no_review, browser_check=not args.no_browser,
                                   max_output_tokens=args.max_output_tokens, vision=not args.text_only,
-                                  api_base_url=args.api_base_url, model=args.model)
+                                  api_base_url=args.api_base_url, model=args.model, resume=args.resume,
+                                  allow_network=args.allow_network, figure_manifest=args.figure_manifest)
         except Exception as exc:
             print(f"localization failed: {exc}", file=sys.stderr)
             return 1
@@ -144,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
         summary["build_errors"] = (result.get("build") or {}).get("errors")
         summary["review_issues"] = len((result.get("review") or {}).get("issues", []))
         print(json.dumps(summary, indent=2, ensure_ascii=True))
-        return 0 if result.get("status") == "delivered" else 1
+        return 0 if result.get("status") in ("delivered", "delivered_with_unresolved") else 1
     else:
         from .web import create_app
 

@@ -474,6 +474,12 @@ def cmd_serve(a):
     ThreadingHTTPServer(("127.0.0.1", a.port), partial(SimpleHTTPRequestHandler, directory=str(run.out))).serve_forever()
 
 
+def cmd_benchmark(a):
+    from .benchmark import run_cli
+
+    return run_cli(a)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="python -m segment_mapping", description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -662,6 +668,10 @@ def build_parser():
     s = add("deliver", cmd_deliver, "map, README, data_report.md, reviewer ZIP, validation, browser check")
     s.add_argument("--no-browser", action="store_true")
     add("validate", cmd_validate, "validate outputs")
+    s = add("benchmark", cmd_benchmark, "score runs' segment geometries against reference runs (writes benchmark.json/.md)", run=False)
+    s.add_argument("--reference", action="append", required=True, metavar="[NAME=]PATH", help="reference run folder or segments file (repeat)")
+    s.add_argument("--run", dest="runs", action="append", default=[], metavar="NAME=PATH", help="run to score (repeat)")
+    s.add_argument("--out", help="output folder (default tmp/benchmark_YYYYMMDD)")
     s = add("serve", cmd_serve, "serve outputs/ for a manual browser check")
     s.add_argument("--port", type=int, default=8765)
     return p

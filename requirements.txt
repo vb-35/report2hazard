@@ -6,8 +6,8 @@ Flask
 lingua-language-detector==2.1.1
 
 # GIS placement of segments (segment_mapping)
-geopandas
-shapely
+geopandas>=1.0
+shapely>=2.1
 pyproj
 rasterio
 numpy

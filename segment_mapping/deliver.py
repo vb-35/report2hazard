@@ -16,12 +16,12 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .build import SHP_FIELDS, _shp_text
+from .build import SHP_FIELDS, OUTCOME_FIELDS, GEOMETRY_ROLES, OUTCOME_CONFIDENCE, segment_outcomes, _shp_text
 from .geom import Evaluator
 from .runctx import Run, read_json, today, write_json
 
 ZIP_FILES = ["segments.shp", "segments.shx", "segments.dbf", "segments.prj", "segments.cpg", "segments_evidence.csv",
-             "segments_map.html", "README.md"]
+             "segments_map.html", "README.md", "segments.geojson", "segment_results.json", "segment_results.csv", "data_report.md", "checks.json"]
 FIELD_HELP = {
     "seg_id": "Segment ID exactly as in the input table",
     "part_id": "Unique part key (joins segments_evidence.csv)",
@@ -51,6 +51,18 @@ def _load_evidence(run: Run) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def load_geometries(run: Run):
+    """Read the canonical mixed geometries, including an empty unresolved run."""
+    import geopandas as gpd
+    path = run.out / "segments.geojson"
+    if path.exists():
+        data = read_json(path, {})
+        if not data.get("features"):
+            return gpd.GeoDataFrame(columns=SHP_FIELDS + OUTCOME_FIELDS + ["geometry"], geometry="geometry", crs=4326)
+        return gpd.GeoDataFrame.from_features(data["features"], crs=4326)
+    return gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
+
+
 def _j(s, default):
     try:
         return json.loads(s) if s else default
@@ -77,7 +89,7 @@ def table(headers, rows) -> str:
 
 def _popup_html(e: dict) -> str:
     esc = html.escape
-    rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(str(e.get(k, '')))}</td></tr>" for k in SHP_FIELDS)
+    rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(str(e.get(k, '')))}</td></tr>" for k in SHP_FIELDS + OUTCOME_FIELDS)
     parts = [f"<h4>{esc(e['part_id'])} — {esc(e['part_label'])}{' <span style=\"color:#b00\">(HYPOTHESIS — check)</span>' if e['is_hypo'] == '1' else ''}</h4>",
              f"<table class='attr'>{rows}</table>"]
 
@@ -161,7 +173,7 @@ def check_map(run: Run, wait_ms: int = 20000) -> dict:
     import geopandas as gpd
 
     page = run.out / "segments_map.html"
-    gdf = gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
+    gdf = load_geometries(run)
     expected = dict(parts=len(gdf), hypotheses=int((gdf.is_hypo == 1).sum()), segments=gdf.seg_id.nunique())
     text = page.read_text(encoding="utf-8")
     from .webmap import embedded_counts
@@ -202,44 +214,86 @@ def validate(run: Run) -> dict:
     import geopandas as gpd
 
     errs, warns = [], []
+    canonical = run.out / "segments.geojson"
     shp = run.out / "segments.shp"
-    for ext in ("shp", "shx", "dbf", "prj", "cpg"):
-        if not (run.out / f"segments.{ext}").exists():
-            errs.append(f"missing segments.{ext}")
-    if errs:
-        return dict(errors=errs, warnings=warns)
-    g = gpd.read_file(shp, encoding="UTF-8")
+    if not canonical.exists() and not shp.exists():
+        return dict(errors=["missing segments.geojson or segments.shp"], warnings=[])
+    g = load_geometries(run)
     ev = _load_evidence(run)
-    if g.crs is None or g.crs.to_epsg() != run.epsg:
-        errs.append(f"shapefile CRS {g.crs} is not {run.crs}")
-    if not g.geom_type.isin(["Polygon", "MultiPolygon"]).all():
-        errs.append("non-polygon features")
+    expected_crs = 4326 if canonical.exists() else run.epsg
+    if g.crs is None or g.crs.to_epsg() != expected_crs:
+        errs.append(f"geometry CRS {g.crs} is not EPSG:{expected_crs}")
+    if not g.geom_type.isin(["Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon"]).all():
+        errs.append("unsupported geometry types")
     if not g.geometry.is_valid.all() or g.geometry.is_empty.any():
         errs.append("invalid or empty geometries")
-    if any(len(c) > 10 for c in g.columns if c != "geometry"):
-        errs.append("field name longer than 10 characters")
-    if [c for c in g.columns if c != "geometry"] != SHP_FIELDS:
-        errs.append(f"fields differ from required list: {list(g.columns)}")
-    if not np.allclose(g.geometry.area / 1e4, g.area_ha.astype(float), atol=1e-4):
-        errs.append("area_ha does not match geometry area")
     if not g.part_id.is_unique:
         errs.append("part_id not unique")
     if set(g.part_id) != {e["part_id"] for e in ev} or len(ev) != len(g):
-        errs.append("evidence CSV does not join one-to-one with the shapefile by part_id")
-    seg_ids = [s["seg_id"] for s in run.segments]
-    missing = set(seg_ids) - set(g.seg_id.astype(str))
-    if missing:
-        errs.append(f"segments without polygon: {sorted(missing)}")
-    if (run.out / "segments.cpg").read_text().strip().upper() not in ("UTF-8", "UTF8"):
-        errs.append(".cpg is not UTF-8")
-    hi = g[(g.confidence == "high") & (g.is_hypo != 0)]
-    if len(hi):
-        errs.append(f"high confidence with is_hypo 1: {list(hi.part_id)}")
-    for s in run.segments:
-        sub = g[g.seg_id.astype(str) == s["seg_id"]]
-        for col, key in (("process", "process"), ("category", "category"), ("interact", "interact"), ("phase", "phase")):
-            if len(sub) and not (sub[col].astype(str).str.rstrip() == _shp_text(s[key]).rstrip()).all():
-                errs.append(f"segment {s['seg_id']}: {col} differs from the input table")
+        errs.append("evidence CSV does not join one-to-one with canonical geometries by part_id")
+    if len(g):
+        projected = g.to_crs(run.crs)
+        polys = projected.geometry.geom_type.isin(["Polygon", "MultiPolygon"])
+        if not np.allclose(projected.loc[polys].geometry.area / 1e4, projected.loc[polys, "area_ha"].astype(float), atol=1e-4):
+            errs.append("area_ha does not match geometry area")
+        if ((g.confidence == "high") & (g.is_hypo.astype(int) != 0)).any():
+            errs.append("high confidence with is_hypo 1")
+    outcomes, issues = segment_outcomes(run.segments, run.spec(), ev)
+    errs += issues
+    stored = read_json(run.out / "segment_results.json", None)
+    if canonical.exists() and stored != outcomes:
+        errs.append("segment_results.json differs from validated localization outcomes")
+    for e in ev:
+        if e.get("geometry_role", "event_extent") not in GEOMETRY_ROLES:
+            errs.append(f"{e['part_id']}: invalid geometry_role")
+        for field in ("event_confidence", "location_confidence", "boundary_confidence"):
+            if field in e and e[field] not in OUTCOME_CONFIDENCE:
+                errs.append(f"{e['part_id']}: invalid {field}")
+    for _, feature in g.iterrows():
+        pid = feature["part_id"]
+        role = feature.get("geometry_role", "event_extent" if feature.geometry.geom_type in ("Polygon", "MultiPolygon") else "location")
+        boundary = feature.get("boundary_confidence", "unknown")
+        if role not in GEOMETRY_ROLES:
+            errs.append(f"{pid}: invalid geometry_role in canonical geometries")
+        if role == "event_extent" and feature.geometry.geom_type not in ("Polygon", "MultiPolygon"):
+            errs.append(f"{pid}: event_extent requires a polygon")
+        if role != "event_extent" and boundary != "unknown":
+            errs.append(f"{pid}: location/context/search_area requires unknown boundary_confidence")
+        if boundary == "high" and feature["placement"] != "documented":
+            errs.append(f"{pid}: high boundary_confidence requires a documented outline")
+        if feature.get("localization_status", "located") != "located":
+            errs.append(f"{pid}: a geometry must have located localization_status")
+        for field in ("event_confidence", "location_confidence", "boundary_confidence"):
+            if field in feature and feature[field] not in OUTCOME_CONFIDENCE:
+                errs.append(f"{pid}: invalid {field} in canonical geometries")
+        evidence = next((e for e in ev if e["part_id"] == pid), None)
+        if evidence:
+            if evidence.get("rule_5d") == "1" and boundary not in ("low", "unknown"):
+                errs.append(f"{pid}: assumed extent requires low or unknown boundary_confidence")
+            for field in OUTCOME_FIELDS:
+                if field in feature and field in evidence and str(feature[field]) != evidence[field]:
+                    errs.append(f"{pid}: {field} differs between canonical geometry and evidence CSV")
+            if "geometry_type" in feature and feature["geometry_type"] != feature.geometry.geom_type:
+                errs.append(f"{pid}: geometry_type differs from actual geometry")
+    if shp.exists():
+        for ext in ("shx", "dbf", "prj", "cpg"):
+            if not (run.out / f"segments.{ext}").exists():
+                errs.append(f"missing segments.{ext}")
+        legacy = gpd.read_file(shp, encoding="UTF-8")
+        if not legacy.geom_type.isin(["Polygon", "MultiPolygon"]).all():
+            errs.append("non-polygon features in compatibility shapefile")
+        if legacy.crs is None or legacy.crs.to_epsg() != run.epsg:
+            errs.append("shapefile CRS differs from run CRS")
+        if [c for c in legacy.columns if c != "geometry"] != SHP_FIELDS:
+            errs.append("shapefile fields differ from required list")
+        polygon_ids = set(g.loc[g.geom_type.isin(["Polygon", "MultiPolygon"]), "part_id"])
+        if set(legacy.part_id) != polygon_ids:
+            errs.append("shapefile does not match polygon subset of canonical geometries")
+    for seg in run.segments:
+        sub = g[g.seg_id.astype(str) == str(seg["seg_id"])]
+        for col in ("process", "category", "interact", "phase"):
+            if len(sub) and not sub[col].astype(str).str.rstrip().isin([str(seg[col]).rstrip(), _shp_text(seg[col]).rstrip()]).all():
+                errs.append(f"segment {seg['seg_id']}: {col} differs from the input table")
     for e in ev:
         if e["rule_5d"] == "1":
             if (e["placement"], e["confidence"], e["is_hypo"]) != ("modelled", "low", "1"):
@@ -270,17 +324,20 @@ def write_readme(run: Run) -> Path:
     import geopandas as gpd
 
     spec = run.spec()
-    g = gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
+    g = load_geometries(run)
     ev = _load_evidence(run)
     lines = [f"# {spec.get('event') or run.config.get('event', '')} — reviewer package", "",
-             f"{len(g)} polygon parts for {g.seg_id.nunique()} segments. CRS: {run.crs} ({_crs_name(run)}). Encoding UTF-8.",
+             f"{len(g)} localized parts for {g.seg_id.nunique()} of {len(run.segments)} input segments. Canonical GeoJSON CRS: EPSG:4326. Encoding UTF-8.",
              "Overlapping parts are intentional (successive processes); do not sum areas.", "",
              "## Contents", "",
-             "- `segments.shp` (+ .shx .dbf .prj .cpg): one polygon feature per placed part.",
+             "- `segments.geojson`: canonical mixed point, line and polygon geometries (EPSG:4326).",
+             "- `segments.shp` (+ .shx .dbf .prj .cpg), when present: polygon subset only, in the run CRS.",
+             "- `segment_results.json` / `segment_results.csv`: every input segment, status, reason and independent confidence fields; unresolved segments have no geometry.",
              "- `segments_evidence.csv`: full evidence per part, keyed by `part_id` (quotations with pages, visual observations, "
              "georeferencing control points and errors, reasoning, uncertainty, alternatives, classification reasons, fits, sensitivity).",
-             "- `segments_map.html`: interactive map (needs internet for base maps and the Leaflet library). One layer per segment; "
-             "dashed outline = is_hypo 1; click a polygon for all attributes and evidence.", "",
+             "- `segments_map.html`: interactive map with Leaflet inlined; internet is optional for base maps. One layer per segment; "
+             "dashed outline = is_hypo 1; click a feature for all attributes and evidence.", "",
+             "Geometry roles distinguish event extents, locations, context and search areas. Event, location and boundary confidence are independent; unknown boundary confidence does not establish an event outline.", "",
              "## Shapefile fields", "", table(["Field", "Meaning"], FIELD_HELP.items()),
              "Shapefile text is limited to 254 bytes; full texts are in the CSV.", "",
              "Classification (independent fields): `placement` = how the geometry was built; `is_hypo` = whether the reviewer must check "
@@ -316,7 +373,7 @@ def write_report(run: Run, validation: dict, map_check: dict | None) -> Path:
 
     spec = run.spec()
     notes = spec.get("report_notes", {})
-    g = gpd.read_file(run.out / "segments.shp", encoding="UTF-8")
+    g = load_geometries(run)
     ev = _load_evidence(run)
     checks = read_json(run.out / "checks.json", {})
     visuals = read_json(run.raw / "visual_evidence.json", [])
@@ -329,11 +386,19 @@ def write_report(run: Run, validation: dict, map_check: dict | None) -> Path:
     L = [f"# {spec.get('event') or run.config.get('event', '')} — GIS placement report", "",
          f"Report: `{run.report_path.name}` ({page_description}). "
          f"CRS: {run.crs} {_crs_name(run)}. Built {today()} with segment_mapping {__version__}.", "",
-         f"**{len(g)} polygon parts cover {g.seg_id.nunique()} of {len(run.segments)} segments; {int((g.is_hypo == 1).sum())} parts are hypotheses (is_hypo = 1).** "
+         f"**{len(g)} localized parts cover {g.seg_id.nunique()} of {len(run.segments)} segments; {int((g.is_hypo == 1).sum())} parts are hypotheses (is_hypo = 1).** "
          "Overlaps between parts are intentional.", ""]
     if run.config.get("mode") == "text":
         L += ["**Text-only run:** placements use the report text and provided spatial data only. Figures, maps and photographs were "
               "not inspected (known only from captions), so no report outline was digitized and no part is `documented`.", ""]
+    outcomes = read_json(run.out / "segment_results.json", [])
+    tiers = {t: sum(r.get("precision") == t for r in outcomes) for t in ("specific", "approximate", "broad", "unresolved")}
+    L += ["## Localization outcomes", "", "Precision (derived from the methods used): " + ", ".join(f"{n} {t}" for t, n in tiers.items()) + ".", "",
+          table(["Segment", "Status", "Precision", "Reason", "Event confidence", "Location confidence", "Boundary confidence"],
+          [[r.get(k, "") for k in ("seg_id", "localization_status", "precision", "reason", "event_confidence", "location_confidence", "boundary_confidence")] for r in outcomes]),
+          "Context and search areas are reference geometries; a location does not assert an event boundary. Unknown boundary confidence means the extent is unsupported. "
+          "Precision: specific = identified feature or reach between stated points; approximate = valley floor, elevation band or whole stream; "
+          "broad = whole catchment or search area (appropriate only for catchment-wide conditions and triggers).", ""]
     L += N("summary")
 
     inv = run.raw / "inventory.md"
@@ -354,9 +419,10 @@ def write_report(run: Run, validation: dict, map_check: dict | None) -> Path:
         L += [f"### Segment {s['seg_id']}: {s['process'].strip()}", "",
               table(["Part", "Meaning", "Placement", "Confidence", "Hypothesis", "Area ha", "Main evidence"],
                     [[e["part_id"], e["part_label"], e["placement"], e["confidence"], "yes" if e["is_hypo"] == "1" else "no",
-                      f"{float(e['area_ha']):.4f}", f"printed p. {e['rep_page']}" + (f"; fig. {e['figure_refs']}" if e["figure_refs"] else "")
+                      f"{float(e['area_ha']):.4f}" if e["area_ha"] else "n/a", f"printed p. {e['rep_page']}" + (f"; fig. {e['figure_refs']}" if e["figure_refs"] else "")
                       + f" ({e['evidence_type']})"] for e in sel])]
         for e in sel:
+            L += [f"- Geometry: {e.get('geometry_type', '')}; role: {e.get('geometry_role', 'event_extent')}; boundary confidence: {e.get('boundary_confidence', 'unknown')}."]
             L += [f"- **{e['part_id']}** — {e['reasoning']} *Uncertainty:* {e['uncertainty']}"
                   + (f" *Alternatives:* {e['alternative_hypotheses']}" if e["alternative_hypotheses"] else "")
                   + f" *Classification:* placement — {e['reason_placement']}; is_hypo — {e['reason_is_hypo']}; confidence — {e['reason_confidence']}"]
@@ -446,12 +512,13 @@ def make_zip(run: Run) -> Path:
     target = run.out / name
     for old in run.out.glob("*_review.zip"):
         old.unlink()
+    files = [f for f in ZIP_FILES if (run.out / f).exists()]
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in ZIP_FILES:
+        for f in files:
             z.write(run.out / f, arcname=f)
     with zipfile.ZipFile(target) as z:
-        assert sorted(z.namelist()) == sorted(ZIP_FILES) and z.testzip() is None
-        for f in ZIP_FILES:
+        assert sorted(z.namelist()) == sorted(files) and z.testzip() is None
+        for f in files:
             assert hashlib.sha256(z.read(f)).digest() == hashlib.sha256((run.out / f).read_bytes()).digest()
     return target
 

@@ -78,15 +78,19 @@ def make_pipeline_run(root: Path) -> Path:
 class FakeModel:
     timing_path = None
 
-    def __init__(self):
+    def __init__(self, links=None):
         self.calls = []
         self.requests = []
+        self.links = links or {}
 
     def complete_json(self, *, system_prompt, user_payload, validate, response_schema=None, **kw):
         name = response_schema["name"]
         self.calls.append(name)
         self.requests.append(dict(name=name, prompt=system_prompt, payload=user_payload, images=kw.get("images", [])))
-        if name == "localization_frame":
+        if name == "localization_evidence":
+            ans = {"links": [{"segment": s["segment"], "passages": list(self.links.get(s["segment"], []))}
+                             for s in user_payload["segments"]]}
+        elif name == "localization_frame":
             cands = user_payload["candidates"]
             pick = lambda kind, nm: next(c["id"] for c in cands if c["kind"] == kind and c["name"] == nm)
             self.bridge = pick("bridges", "Testbrücke")
@@ -112,7 +116,12 @@ class FakeModel:
             else:
                 part = dict(base, method="feature", confidence="high", args=dict(args, candidate=self.bridge),
                             parameter={"value": 7, "basis": "data_measurement", "justification": "deck width", "report_area_ha": None})
-            ans = {"segment": seg, "parts": [part]}
+            part.update(geometry_role="event_extent", event_confidence="medium",
+                        location_confidence=part["confidence"], boundary_confidence="unknown")
+            part["parameter"]["fit_report_area"] = False
+            ans = {"segment": str(seg), "parts": [part], "localization_status": "located", "reason": "Supported by synthetic evidence",
+                   "event_confidence": "medium", "location_confidence": part["confidence"], "boundary_confidence": "unknown",
+                   "data_requests": []}
             if "visual_observations" in response_schema["schema"]["properties"]["parts"]["items"]["properties"]:
                 part["visual_observations"] = []
                 if kw.get("images"):
@@ -169,7 +178,7 @@ class LocalizationStageTests(TestCase):
         model = FakeModel()
         res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, log=lambda m: None)
         self.assertEqual(res["status"], "delivered", res.get("build"))
-        self.assertEqual(model.calls, ["localization_frame"] + ["segment_placement"] * 3 + ["localization_review"])
+        self.assertEqual(model.calls, ["localization_evidence", "localization_frame"] + ["segment_placement"] * 3 + ["localization_review"])
         loc = self.pipe / "localization"
         g = gpd.read_file(loc / "outputs/segments.shp").set_index("part_id")
         self.assertEqual(list(g.index), ["1a", "2a", "3a"])
@@ -206,6 +215,20 @@ class LocalizationStageTests(TestCase):
         self.assertEqual(captions[0]["printed_page"], 44)
         self.assertIn("belongs to text page 2", localizer._verify_quote(3, "Der Murgang erreichte"))
 
+    def test_linked_evidence_reaches_segment_calls_and_unverified_quotes_are_dropped(self):
+        from multi_hazard_pipeline.agents.localization_agent import localize_run
+
+        links = {"3": [{"page": 2, "quote": "zerstörte das Gelän- der", "kind": "place", "note": "bridge railing"},
+                       {"page": 2, "quote": "eine erfundene Brücke bei km 99", "kind": "place", "note": "invented"}]}
+        model = FakeModel(links)
+        res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, vision=False, log=lambda m: None)
+        self.assertEqual(res["status"], "delivered", res.get("build"))
+        linked = json.loads((self.pipe / "localization/llm/evidence_links.json").read_text(encoding="utf-8"))
+        self.assertEqual([p["quote"] for p in linked["links"]["3"]], ["zerstörte das Gelän- der"])
+        self.assertEqual(linked["dropped"][0]["error"], "quote not verified")
+        seg3 = next(r for r in model.requests if r["name"] == "segment_placement" and r["payload"]["segment"]["segment"] == "3")
+        self.assertIn("place: bridge railing", [e["note"] for e in seg3["payload"]["segment"]["evidence"]])
+
     def test_vision_localize_end_to_end(self):
         import csv
         from PIL import Image
@@ -218,8 +241,8 @@ class LocalizationStageTests(TestCase):
         model = FakeModel()
         res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, log=lambda m: None)
         self.assertEqual(res["status"], "delivered", res.get("build"))
-        self.assertEqual(model.calls, ["localization_frame"] + ["segment_placement"] * 3 + ["localization_review"] * 3)
-        self.assertTrue(all(len(r["images"]) == 4 for r in model.requests))
+        self.assertEqual(model.calls, ["localization_evidence", "localization_frame"] + ["segment_placement"] * 3 + ["localization_review"] * 3)
+        self.assertTrue(all(len(r["images"]) == (0 if r["name"] == "localization_evidence" else 4) for r in model.requests))
         placements = [r for r in model.requests if r["name"] == "segment_placement"]
         reviews = [r for r in model.requests if r["name"] == "localization_review"]
         self.assertEqual([r["payload"]["image_sources"][0]["file_page"] for r in placements], [1, 3, 2])
@@ -298,6 +321,22 @@ class LocalizationStageTests(TestCase):
         self.assertEqual((cp["placement"], cp["is_hypo"], cp["confidence"], cp["rule_5d"]), ("modelled", 1, "low", True))
         with self.assertRaises(TemplateError):  # no stationing in the frame
             comp.point("hm:4")
+
+    def test_feature_rejects_constraints_it_cannot_apply(self):
+        from segment_mapping.templates import Compiler, TemplateError
+
+        facts = {"candidates": [{"id": "R1", "kind": "roads", "name": "Road", "expr": {},
+                                 "geom_type": "LineString", "layer": "roads"},
+                                {"id": "K1", "kind": "road_km", "name": "km 11", "expr": {},
+                                 "geom_type": "Point", "layer": "road_km"}]}
+        comp = Compiler(facts, {"main_stream": "S1", "catchment": "C1"}, {}, chainage=False)
+        for constraint in ({"center": "K1"}, {"length_m": 100}):
+            with self.subTest(constraint=constraint), self.assertRaisesRegex(TemplateError, "entire candidate"):
+                comp.compile_part("8", "8b", {"method": "feature", "args": {"candidate": "R1", **constraint}})
+        part = comp.compile_part("8", "8b", {"method": "road_stretch", "args": {
+            "candidate": "R1", "center": "K1", "length_m": 100}})
+        window = part['geometry']['buffer']['geom']['window']
+        self.assertEqual(window, {"line": "R1", "center": {"representative_point": "K1"}, "length_m": 100.0})
 
 
 class RunPageTests(TestCase):

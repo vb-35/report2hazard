@@ -1,6 +1,6 @@
 # `scripts/placements.json` reference
 
-Every judgement of a mapping run lives in one JSON file, `[run folder]/scripts/placements.json`. The toolkit turns it into the shapefile, evidence CSV, map, README, report and ZIP. No code is written.
+Every judgement of a mapping run lives in one JSON file, `[run folder]/scripts/placements.json`. The toolkit turns it into canonical mixed geometry GeoJSON, an optional polygon-only shapefile, evidence CSV, map, README, report and ZIP. No code is written.
 
 Top-level keys (all optional except `parts`):
 
@@ -12,7 +12,8 @@ Top-level keys (all optional except `parts`):
 | `georef` | Georeferencing of report figures from control points. |
 | `visuals` | Ledger of every figure inspected (observation, date/relevance, method). |
 | `tables` | Ledger of report tables used. |
-| `parts` | One entry per polygon feature of the shapefile. |
+| `parts` | One entry per located point, line or polygon part; empty for an all-unresolved run. |
+| `segment_results` | Complete per-input-segment outcomes: `seg_id`, `localization_status`, `reason`, `event_confidence`, `location_confidence`, `boundary_confidence`. |
 | `checks` | Report-vs-GIS comparisons (areas, lengths, distances, chainage, elevations). |
 | `data_gaps` | Data searched for but not found: `[{"searched": "...", "result": "...", "effect": "effect on placements"}]`. |
 | `report_notes` | Free text for the report: `summary`, `data`, `gaps`, `checks`, `visual`, `sensitivity`, `uncertain`, `other`. |
@@ -20,6 +21,25 @@ Top-level keys (all optional except `parts`):
 | `map` | `context` layers and `chainage_ticks` for the HTML map. |
 
 Coordinates are in the run CRS (`run.json` → `crs`) unless stated otherwise. `build` warns about every key it does not know (typos are otherwise silently ignored), so read its warnings.
+
+## Outcomes and exports
+
+New localizer specs include one `segment_results` entry for every original segment ID (preserved as a string):
+
+```json
+"segment_results": [
+  {"seg_id": "1", "localization_status": "located", "reason": "Named reach identified",
+   "event_confidence": "high", "location_confidence": "medium", "boundary_confidence": "unknown"},
+  {"seg_id": "2", "localization_status": "unresolved", "reason": "Several possible crossings",
+   "event_confidence": "medium", "location_confidence": "unknown", "boundary_confidence": "unknown"}
+]
+```
+
+`located` needs at least one successfully built part and supported location confidence. `unresolved` has no parts and unknown location/boundary confidence; event confidence may remain known. Missing/duplicate IDs, inconsistent statuses and invalid confidence values are errors. Specs without `segment_results` retain the legacy requirement that every segment have a part; outcomes are inferred for export.
+
+Parts accept valid, nonempty native `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `Polygon`, `MultiPolygon`. `geometry_role` is `event_extent` (polygonal event boundary), `location` (identified feature/reach/point), `context` (reference feature) or `search_area` (area to investigate). Without a role, polygons default to `event_extent`, points/lines to `location`. Location/context/search-area boundary confidence must be `unknown`. The optional independent part fields `event_confidence`, `location_confidence`, `boundary_confidence` accept `high`, `medium`, `low`, `unknown`; high boundary confidence requires a documented outline, and assumed extents permit only low/unknown boundary confidence. Legacy `confidence` and its existing classification rules remain supported.
+
+`segments.geojson` (EPSG:4326) is canonical and contains every built geometry with full field names. `segments.shp` is written only when there are polygon parts, contains that subset only, and uses the run CRS/legacy fields. Points and lines have null `area_ha`; they are never buffered for export. `segment_results.json` / `.csv` preserve all segment outcomes, including unresolved ones. The evidence CSV joins canonical geometries by `part_id`. Entirely unresolved runs still produce ledgers, an empty GeoJSON, map and reviewer package.
 
 ## Geometry expressions
 
@@ -130,6 +150,7 @@ Captions are filled automatically from `data_raw/report_captions.json` (or verif
 {"part_id": "6c", "seg_id": "6", "part_label": "Mapped fan erosion",
  "geometry": "ero70",
  "parameter": {"name": "height above channel", "unit": "m", "value": 3, "sensitivity": [1.5, 4.5]},
+ "geometry_role": "event_extent", "event_confidence": "medium", "location_confidence": "medium", "boundary_confidence": "medium",
  "placement": "documented", "is_hypo": 0, "confidence": "medium", "rule_5d": false,
  "evidence_type": "orthophoto", "figures": ["70"], "georef": ["fig70"], "tables": ["12"],
  "quotes": [{"printed_page": 70, "start": "Ein kleinerer Teil", "end": "gänzlich zerstört."}, {"text": "exact sentence"}],
@@ -148,8 +169,9 @@ Captions are filled automatically from `data_raw/report_captions.json` (or verif
 
 ### Parameters, fits and sensitivity
 
+- Optional part `report_area_ha` compares the measured area with the report without fitting; differences above 25% generate review warnings.
 - `{"value": v}`: the chosen value replaces `"$param"`.
-- `{"fit_area_ha": T, "bounds": [lo, hi], "tolerance_pct": 5}`: bisection on the parameter until the polygon area is within ±5 % of T. Use it only when the report gives an area and no documented outline (rule 5b). The fit is recorded and labelled as not an independent check.
+- `{"fit_area_ha": T, "bounds": [lo, hi], "tolerance_pct": 5}`: bisection on the parameter until the polygon area is within ±5 % of T. Use it only when an explicit fit is justified by a report area and no documented outline is available (rule 5b). A reported area alone does not require fitting; the pipeline compiler fits only with `parameter.fit_report_area=true`. The fit is recorded and labelled as not an independent check.
 - `"$param"` may also appear inside strings, e.g. a colour rule `"(R>$param)&(G<110)"`. That lets you test digitizing thresholds as a sensitivity.
 - `"sensitivity": [lower, higher, ...]`: areas are computed for each value plus the chosen or fitted value.
 - **Rule 5d parts** (`"rule_5d": true`) must be `modelled` / `low` / `is_hypo 1`, with `value` and sensitivity values both below and above it.
@@ -161,7 +183,7 @@ Captions are filled automatically from `data_raw/report_captions.json` (or verif
 - high ⇒ is_hypo 0.
 - Rule 5d ⇒ modelled / low / is_hypo 1, with sensitivity on both sides.
 - `documented` outlines are never area-fitted. Without a `figures`/`georef` reference a warning is raised.
-- Every segment has ≥ 1 part.
+- With `segment_results`, every input segment has a consistent located/unresolved result; unresolved segments have no parts. Without it, every segment needs at least one part (legacy behavior).
 - Required texts: label, basis, sources, reasoning, uncertainty, the three classification reasons, and alternatives for hypotheses.
 - Every quotation is verified, and every referenced figure, table and georef exists.
 

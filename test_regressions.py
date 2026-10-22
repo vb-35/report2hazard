@@ -319,7 +319,8 @@ def blocked_network(*args, **kwargs):
 
 
 def check_long_paths(root):
-    base = root / "long-path-check"
+    # Expand Windows short directory names before computing the parent length.
+    base = (root / "long-path-check").resolve()
     # Match the reported 220-character parent; the old temporary filename exceeds 260.
     output = base / ("x" * (220 - len(str(base.resolve())) - 1))
     resolved = resolve_path(output)

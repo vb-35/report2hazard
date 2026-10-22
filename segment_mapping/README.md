@@ -5,7 +5,7 @@ The toolkit places the segments extracted from an event report on a map. Every g
 - downloading data;
 - terrain models;
 - georeferencing report figures;
-- building and validating the shapefile;
+- building and validating mixed geometry exports;
 - the map, README, report and ZIP.
 
 The model (or analyst) only makes decisions, written as data in `[run folder]/scripts/placements.json` (see [SPEC.md](SPEC.md)).
@@ -59,26 +59,50 @@ Use the project environment: `.venv\Scripts\python.exe -m segment_mapping ...` f
 | | `probe RUN EXPR [--param v] [--measure JSON] [--chainage NAME] [--save NAME]` | Evaluates an expression or measure without building. |
 | 6. Decide | write `scripts/placements.json` | Refs, chainage, GCPs, ledgers, parts, checks, gaps, notes. |
 | | `georef RUN [--id ID]` | Residuals, independent checks, warped QA overlay. |
-| | `build RUN [--only 3a,6] [--dry]` | `outputs/segments.shp` (+ .shx .dbf .prj .cpg), `segments_evidence.csv`, `checks.json`. Prints errors and warnings; iterate to 0 errors. |
+| | `build RUN [--only 3a,6] [--dry]` | `outputs/segments.geojson`, polygon-only `segments.shp` when applicable, `segment_results.json` / `.csv`, `segments_evidence.csv`, `checks.json`. Prints errors and warnings; iterate to 0 errors. |
 | 7. Deliver | `deliver RUN` | `segments_map.html`, `README.md`, `data_report.md`, `<event>_review.zip`, final validation, and a headless Edge/Chrome load check (`map_check.json`). |
 | | `validate RUN`, `serve RUN` | Re-validate; serve `outputs/` for a manual browser check. |
 
 Every command is appended to `scripts/commands.log`. Together with `placements.json`, this makes the run reproducible and lists it in the report.
 
-## Text-only localization from the pipeline (constrained orchestration)
+## Localization from the pipeline (constrained orchestration)
 
-For a model without vision or tools (e.g. the pipeline's own LLM), the pipeline drives the toolkit itself:
+The pipeline drives the toolkit with bounded model choices and report-image inspection by default; `--text-only` disables image attachments:
 
 ```
-python -m multi_hazard_pipeline localize RESULTS_RUN_DIR --package package.json [--segments-table T.tsv] [--only 3,4] [--no-review]
+python -m multi_hazard_pipeline localize RESULTS_RUN_DIR --package package.json [--segments-table T.tsv] [--only 3,4] [--no-review] [--text-only]
+# Optional: --resume --allow-network --figure-manifest reviewed_outlines.json
 ```
 
 - It runs only on **approved** runs and writes everything to `RESULTS_RUN_DIR/localization/`, a normal toolkit run folder. A `localization` block is added to the run manifest.
 - The model makes small, schema-checked choices:
+  - evidence linking: batched calls over the whole report that attach verified location passages (stations, areas,
+    named places) to each segment, written to `llm/evidence_links.json`; unverifiable quotes are dropped;
   - one frame call: main stream, catchment, named features, hm anchors;
   - one call per segment: methods from a fixed menu with candidate ids and parameters;
   - repair calls when needed, and an optional self-review.
 - Code builds every geometry and decides the placement class. It applies rule 5d and verifies quotations.
+- Each segment has a `located` or `unresolved` outcome, a reason and independent event/location/boundary confidence. Unresolved segments have no parts; geometry is never invented to fill coverage.
+- Each located segment gets a derived `precision`: `specific` (identified feature, reach between stated points),
+  `approximate` (valley floor, elevation band, whole stream, buildings by proximity, the area of a named place) or
+  `broad` (whole catchment, point search area). The whole catchment is accepted only for catchment-wide conditions and
+  triggers, never for a channel process.
+- Parts are never more precise than the wording. A place the report gives as "in the area of X", a hamlet or a farm
+  group is a `named_area` search area (100-300 m), not a point or single buildings; a total ("12 buildings affected")
+  is not placed on a village point. Each stream whose bed the evidence names gets a part, and fan processes include
+  the main stream's fan reach. Incidents the report lists as further reports or at other torrents are left out.
+  The review receives code checks for area wording on points, totals on points and streams quoted but not mapped.
+- Candidates supplied by several layers (e.g. a supplied and a context copy of the stream network) are merged, with
+  aliases. Bridge facts state which stream they cross (and whether they are the only bridge on it) and which road they carry.
+- `python -m segment_mapping benchmark --reference DIR ... --run NAME=PATH` scores runs against reference runs per
+  segment (precision, recall, site recall, IoU, scale penalty) with a leave-one-out ceiling between references.
+  Search areas count for finding the reference places, not as extents. Projected reference layers must use metre
+  axes; geographic references select a local UTM CRS. Empty candidate exports use the outcome ledger to score
+  unresolved segments as zero.
+- Parts retain native points, lines and polygons. `geometry_role` distinguishes `event_extent`, `location`, `context`, `search_area`; only a supported polygon can represent an event extent. Boundary confidence for locations/context/search areas is `unknown`.
+- `segments.geojson` (EPSG:4326) is canonical. The optional shapefile contains polygons only in the run CRS; `segment_results.json` / `.csv` retain every original segment ID. Evidence and confidence fields remain in the GeoJSON/CSV without shapefile name limits.
+- Existing localization folders are preserved. `--resume` restores checkpoints only when approved artifacts, package/source fingerprints, optional segment table, figure manifest/candidate/image inputs and relevant settings match; otherwise use a fresh run folder.
+- Completion statuses distinguish `delivered`, `delivered_with_unresolved`, `partial`, `incomplete`, `review_incomplete`, `revision_required`, `build_errors`, `validation_errors` and `failed`. Review or processing failures are not reported as ordinary success.
 - Design: [LOCALIZATION_STAGE_DESIGN.md](LOCALIZATION_STAGE_DESIGN.md).
 
 ## Spatial package
@@ -96,9 +120,45 @@ The package is a folder with `package.json` plus the data files. It declares eac
 - **Useful roles:** `roads` (`ref_field` for road codes such as L13), `road_km` (`value_field`), `bridges`, `buildings`, `names`, `road_land`.
 - **Building a package:** `export-package` writes one from any run, e.g. one filled once with `fetch preset tirol`.
 
+## Optional public data acquisition
+
+Add trusted providers to the existing spatial package, for example the installed official Tirol place-name preset:
+
+```json
+"acquisition": {
+  "providers": [{"id": "tirol_places", "preset": "tirol", "item": "places"}]
+}
+```
+
+Run with `--allow-network`. The model can request `{"provider":"tirol_places","role":"names","query":"Sellrain","reason":"Resolve a report place name"}`; the orchestrator passes role/query/provider to the acquisition layer and records the reason. URLs, services and query fields come from the declaration, not the model. Requests are limited to the configured run bbox and finite request/retry/download budgets; failed or unavailable sources stay explicit gaps. This does not replace mandatory catchment/streams/DEM inputs, enable generic web search, or treat a gazetteer match as proof of damage. Successful downloads refresh candidate IDs and invalidate dependent placements.
+
+## Reviewed report outlines
+
+In vision mode, `--figure-manifest reviewed_outlines.json` offers reviewed outlines alongside GIS candidates; the outline method is not offered with `--text-only`. Each `candidate` path resolves relative to this manifest and points to a prepared `figure_candidate.json` created with `segment_mapping.figure_workflow.prepare_figure`. The prepared candidate records the image hash, source, control provenance and transform; grid mapping needs a verified printed CRS, while landmark mapping needs independently matched controls. The workflow requires withheld checkpoints and explicit accuracy/coverage limits. It never guesses a printed CRS from the regional GIS CRS.
+
+Starter structure (illustrative pixel coordinates and limits, **not a verified outline**):
+
+```json
+{"outlines": [{
+  "id": "reviewed_outline_1",
+  "candidate": "prepared_figure/figure_candidate.json",
+  "segments": ["3"],
+  "pixel_geometry": {"type": "Polygon", "coordinates": [[[100,100],[200,100],[200,200],[100,200],[100,100]]]},
+  "limits": {"max_check_error_m": 10, "min_control_coverage": 0.5, "min_checkpoint_span": 0.3, "min_checkpoints": 2},
+  "interpretation": {
+    "geometry_role": "event_extent", "event_date": "unknown",
+    "legend": "Record the actual legend and any conflicting classes",
+    "reason": "Awaiting source review", "event_confidence": "unknown", "boundary_confidence": "unknown",
+    "target_event_verified": false, "outline_explicit": false
+  }
+}]}
+```
+
+This starter is rejected until an analyst supplies the actual polygon and scale-appropriate limits, verifies the target event/date and explicit legend class, and records supported event/boundary confidence. Accepted polygons are transformed without fitting or buffering; rejected candidates and their reasons remain recorded. The Seigesbach Abb. 71 pilot remains unresolved: printed CRS and event/date interpretation are unverified and the legend has a class conflict. It is not a verified affected-area result.
+
 ## Map
 
-`segments_map.html` is self-contained: Leaflet 1.9.4 (BSD-2, `vendor/leaflet/`) and all data are embedded, and a hillshade from the run DEM is included. It works offline. Web base maps from the preset are optional layers. Set `"offline_map": true` in `run.json` to open on the hillshade; text-only runs do this by default.
+`segments_map.html` is self-contained: Leaflet 1.9.4 (BSD-2, `vendor/leaflet/`) and all data are embedded, and a hillshade from the run DEM is included. It works offline. Web base maps from the preset are optional layers. Set `"offline_map": true` in `run.json` to open on the hillshade; pipeline localization opens offline by default; web base maps remain optional.
 
 ## Run folder
 

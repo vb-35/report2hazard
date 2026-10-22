@@ -9,6 +9,10 @@ import json
 import re
 
 METHODS = {
+    "report_outline": "A verified, reviewed event outline from figure_candidates (args.candidate); preserve it without fitting or buffering.",
+    "location_point": "An identified location only (args.center); native point, affected extent remains unknown.",
+    "channel_reach": "An identified stream reach only (args.stream, from_point, to_point); native line, no inferred width.",
+    "feature_geometry": "Identified candidate in its native geometry (args.candidate); this locates the feature, not its damage extent.",
     "catchment": "Whole catchment (or another catchment candidate C#). For conditions/triggers that concern the catchment as a whole.",
     "elevation_band": "Part of a catchment between elevations (args.min_elev_m / max_elev_m), e.g. 'above 1500 m'.",
     "reach_corridor": "Channel and banks along a stream between two points (args.stream, from_point, to_point), "
@@ -19,7 +23,10 @@ METHODS = {
                "(parameter = width_m); a point given a radius (parameter = width_m used as diameter).",
     "road_stretch": "Stretch of a road candidate (args.candidate R#) of args.length_m centred on args.center; road land "
                     "parcels if available (args.use_road_land) else widened (parameter = width_m).",
-    "buildings_near": "Building footprints within args.radius_m of args.center (candidates by proximity, never proof of damage).",
+    "buildings_near": "Building footprints within args.radius_m of args.center (candidates by proximity, never proof of damage). "
+                      "Only for a building the report identifies so that one footprint fits.",
+    "named_area": "Surroundings of a named place, bank or confluence the report uses only as 'in the area of X' "
+                  "(args.center, args.radius_m 100-300 m). Always a search_area: where something happened, not its footprint.",
     "point_area": "Last resort: circle around a located point (args.center), parameter = radius_m. Placement 'hypothesis'.",
     "expression": "Raw toolkit geometry expression (args.expression as JSON text) when nothing else fits. Explain why.",
 }
@@ -29,6 +36,10 @@ PARAMS = {"reach_corridor": ("height_above_channel_m", 3.0, (0.5, 1.5)), "valley
 ARG_KEYS = ["candidate", "stream", "river", "from_point", "to_point", "upstream", "downstream", "center", "side",
             "min_elev_m", "max_elev_m", "max_dist_m", "length_m", "radius_m", "use_road_land", "within_catchment", "expression"]
 PLACEMENT_REASON = {
+    "report_outline": "documented: explicit event outline with reviewed event interpretation and independently checked map alignment",
+    "location_point": "approximate: identified location; no affected-area boundary is inferred",
+    "channel_reach": "approximate: identified channel reach; no affected-area width is inferred",
+    "feature_geometry": "approximate: identified feature in its native geometry; affected extent remains unknown",
     "catchment": "approximate: official catchment feature named or identified by the report",
     "elevation_band": "modelled: DEM elevation threshold applied within the catchment",
     "reach_corridor": "modelled: terrain band along a calibrated stream reach (DEM calculation)",
@@ -36,6 +47,7 @@ PLACEMENT_REASON = {
     "feature": "approximate: official/OSM feature identified from the report text",
     "road_stretch": "modelled: calculated window along an identified road",
     "buildings_near": "approximate: existing building footprints selected by distance to a located point",
+    "named_area": "approximate: search area around a named place the report locates only by 'in the area of'",
     "point_area": "hypothesis: buffer around an inferred point with no method behind the extent",
     "expression": "modelled: custom toolkit expression",
 }
@@ -46,11 +58,12 @@ class TemplateError(ValueError):
 
 
 class Compiler:
-    def __init__(self, facts: dict, frame: dict, layers: dict, chainage: bool):
+    def __init__(self, facts: dict, frame: dict, layers: dict, chainage: bool, figure_candidates=None):
         self.cands = {c["id"]: c for c in facts["candidates"]}
         self.frame = frame
         self.layers = layers  # run.config["package"]["layers"]
         self.has_chainage = chainage
+        self.figures = figure_candidates or {}
         self.named = {f["candidate"] for f in frame.get("named_features", []) if f.get("candidate") and f.get("certainty") == "named"}
         self.named.add(frame.get("catchment"))
         self.named.add(frame.get("main_stream"))
@@ -139,6 +152,9 @@ class Compiler:
     def compile_part(self, seg_id: str, part_id: str, ans: dict) -> dict:
         m = ans["method"]
         a = {k: ans.get("args", {}).get(k) for k in ARG_KEYS}
+        figure = self.figures.get(a.get("candidate")) if m == "report_outline" else None
+        if m == "report_outline" and (not figure or str(seg_id) not in figure["segments"]):
+            raise TemplateError("report_outline must be a verified candidate explicitly linked to this segment")
         par = ans.get("parameter") or {}
         uses_param = m in PARAMS
         g, layers = self._geometry(m, a), set()
@@ -150,7 +166,7 @@ class Compiler:
         parameter, rule5d = None, False
         if uses_param:
             name, default, (lo, hi) = PARAMS[m]
-            if report_area and m in ("reach_corridor", "valley_floor"):
+            if report_area and par.get("fit_report_area", False) and m in ("reach_corridor", "valley_floor"):
                 parameter = {"name": name, "unit": "m", "fit_area_ha": float(report_area), "bounds": [0, 60]}
             else:
                 v = par.get("value")
@@ -178,9 +194,33 @@ class Compiler:
         basis_txt = f"{m}: " + ", ".join(f"{k}={v}" for k, v in a.items() if v not in (None, "", False) and k != "expression")
         if parameter:
             basis_txt += f"; {parameter['name']}=" + (f"fit to {parameter['fit_area_ha']} ha" if "fit_area_ha" in parameter else f"{parameter['value']} ({basis})")
-        return {
+        role = ans.get("geometry_role") or ("location" if m in ("location_point", "channel_reach", "feature_geometry") else "event_extent")
+        if m in ("location_point", "channel_reach", "feature_geometry") and role != "location":
+            raise TemplateError(f"{m} provides a location, not an event footprint: geometry_role must be location")
+        boundary = ans.get("boundary_confidence", "unknown")
+        if m == "named_area":  # the wording gives a place, never an extent
+            role, boundary = "search_area", "unknown"
+        location_confidence = ans.get("location_confidence", conf)
+        if location_confidence == "high" and m != "report_outline":
+            cid = a.get("candidate")
+            if m == "catchment":
+                cid = self.frame.get("catchment") if not cid or cid == "catch" else cid
+            elif m == "location_point":
+                cid = str(a.get("center", "")).removeprefix("feature:").removeprefix("place:")
+            if m not in ("catchment", "feature", "feature_geometry", "location_point") or cid not in self.named:
+                raise TemplateError("high location confidence requires a uniquely named GIS feature; use medium/low for inference or proximity")
+        if role != "event_extent" and boundary != "unknown":
+            raise TemplateError("a location/context/search area has no event boundary: boundary_confidence must be unknown")
+        if boundary == "high" and m != "report_outline":
+            raise TemplateError("high boundary confidence requires a verified report outline, not a reconstructed template")
+        if rule5d and boundary not in ("low", "unknown"):
+            raise TemplateError("assumed extent cannot have medium or high boundary confidence")
+        result = {
             "part_id": part_id, "seg_id": seg_id, "part_label": ans.get("label", "")[:120], "geometry": g, "parameter": parameter,
             "placement": placement, "is_hypo": is_hypo, "confidence": conf, "rule_5d": rule5d,
+            "geometry_role": role, "event_confidence": ans.get("event_confidence", "unknown"),
+            "location_confidence": location_confidence, "boundary_confidence": boundary,
+            "report_area_ha": report_area,
             "evidence_type": ans.get("evidence_type") or "text", "quotes": quotes,
             "geom_basis": basis_txt, "data_src": self._sources(m, a), "rep_value": ans.get("rep_value", ""),
             "rep_page": ",".join(str(q["pdf_page"]) for q in quotes if q.get("pdf_page")),
@@ -189,14 +229,25 @@ class Compiler:
             "reason_placement": PLACEMENT_REASON[m] if not (m == "feature" and rule5d) else "modelled: identified feature widened by an assumed width",
             **reasons, "method": m, "method_args": {k: v for k, v in a.items() if v not in (None, "")},
         }
+        if figure:
+            interpretation = figure["interpretation"]
+            result.update(geometry_role="event_extent", event_confidence=interpretation["event_confidence"],
+                boundary_confidence=interpretation["boundary_confidence"], location_confidence="medium",
+                geom_basis="Reviewed explicit outline; preserved without fitting. " + interpretation["reason"],
+                data_src=str(figure["source"]), figures=[figure["figure_id"]],
+                georeferencing_assessment=figure["georeferencing_assessment"],
+                georeferencing_limitations=figure["georeferencing_assessment"]["accuracy_note"])
+        return result
 
     def _check_classification(self, m, a, is_hypo, conf, report_area):
         if conf == "high":
             cid = a.get("candidate") or ("catch" if m == "catchment" else None)
+            if m == "location_point":
+                cid = str(a.get("center", "")).removeprefix("feature:").removeprefix("place:")
             cid = self.frame["catchment"] if cid == "catch" else cid
             if is_hypo != 0:
                 raise TemplateError("confidence high requires is_hypo 0")
-            if m not in ("catchment", "feature") or cid not in self.named:
+            if m not in ("catchment", "feature", "feature_geometry", "location_point") or cid not in self.named:
                 raise TemplateError("confidence high is only for a feature the report names that matches exactly one GIS feature "
                                     "(frame certainty 'named'); use medium or low")
         if m == "buildings_near" and is_hypo == 0:
@@ -216,6 +267,19 @@ class Compiler:
 
     def _geometry(self, m, a):
         P = "$param"
+        if m == "report_outline":
+            return self.figures[a["candidate"]]["geometry"]
+        if m == "location_point":
+            return self.point(a["center"])
+        if m == "feature_geometry":
+            return self._cand(a["candidate"])
+        if m == "channel_reach":
+            s = self._cand(a["stream"] or "main", ("streams",))
+            f, t = a["from_point"], a["to_point"]
+            if s == "main" and str(f).startswith("hm:") and str(t).startswith("hm:") and self.has_chainage:
+                return {"reach": {"chainage": "hm", "from": float(str(f)[3:].replace(",", ".")),
+                                  "to": float(str(t)[3:].replace(",", "."))}}
+            return {"between": {"line": s, "from": self.point(f, line=s), "to": self.point(t, line=s)}}
         if m == "catchment":
             return self._cand(a["candidate"] or "catch", ("catchment",))
         if m == "elevation_band":
@@ -251,6 +315,9 @@ class Compiler:
                 within = {"intersection": [within, {"half_plane": {"line": line, "side": side, "extent_m": 2000, "end_extension_m": 0}}]}
             return {"terrain": {"channels": [line], "max_dist_m": float(a["max_dist_m"] or 300), "within": within, "height_m": P}}
         if m == "feature":
+            if a["center"] or a["length_m"]:
+                raise TemplateError("feature uses the entire candidate and cannot apply center/length_m; "
+                                    "use location_point for a known location or road_stretch for a reported length")
             cid = self._cand(a["candidate"])
             gt = self.cands[cid].get("geom_type", "")
             if "Polygon" in gt:
@@ -270,6 +337,11 @@ class Compiler:
             if not a["radius_m"]:
                 raise TemplateError("buildings_near needs radius_m")
             return {"layer": self._layer("buildings"), "within_distance": [self.point(a["center"]), float(a["radius_m"])]}
+        if m == "named_area":
+            r = a["radius_m"]
+            if not r or not 50 <= r <= 500:
+                raise TemplateError("named_area needs radius_m between 50 and 500 m (100-300 m for 'in the area of X')")
+            return {"buffer": {"geom": self.point(a["center"]), "distance": float(r)}}
         if m == "point_area":
             return {"buffer": {"geom": self.point(a["center"]), "distance": P}}  # radius checked in compile_part
         if m == "expression":

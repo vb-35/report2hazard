@@ -148,6 +148,17 @@ def _km_values(pages):
     return vals
 
 
+def _same_feature(a, b, tol: float = 5.0) -> bool:
+    """Two layers supplying the same geometry (e.g. a supplied and a context copy of the stream network)."""
+    if a.is_empty or b.is_empty or a.geom_type.replace("Multi", "") != b.geom_type.replace("Multi", ""):
+        return False
+    size = (lambda g: g.area) if "Polygon" in a.geom_type else (lambda g: g.length)
+    sa, sb = size(a), size(b)
+    if sa and sb and abs(sa - sb) > 0.02 * max(sa, sb):
+        return False
+    return a.hausdorff_distance(b) <= tol
+
+
 class Facts:
     def __init__(self, run: Run, spec: dict | None = None):
         self.run = run
@@ -235,6 +246,7 @@ class Facts:
         chosen = [gk for gk in chosen if not (groups[gk]["role"] == "names" and norm(groups[gk]["name"]) in feature_names)]
         per_kind = Counter()
         placed: list[tuple] = []
+        kept: list[tuple] = []  # (role, geometry, candidate id): the same feature supplied by several layers is one candidate
         for gk in sorted(chosen, key=lambda k: (k[0], -len(self.mentions.get(groups[k]["name"], [])))):
             info = groups[gk]
             role = info["role"]
@@ -243,6 +255,17 @@ class Facts:
                 if any(norm(n) == norm(info["name"]) and pt.distance(q) < 100 for n, q in placed):
                     continue
                 placed.append((info["name"], pt))
+            else:
+                geom = geom_of(info)
+                twin = next((cid for r, g, cid in kept if r == role and _same_feature(g, geom)), None)
+                if twin:
+                    c = self.candidates[twin]
+                    if norm(info["name"]) != norm(c["name"]) and info["name"] not in c.setdefault("aliases", []):
+                        c["aliases"].append(info["name"])
+                    pages = {m["page"] for m in self.mentions.get(info["name"], [])}
+                    c["mention_pages"] = sorted(set(c["mention_pages"]) | pages)
+                    c["mention_count"] += len(self.mentions.get(info["name"], []))
+                    continue
             if per_kind[role] >= max_per_kind:
                 continue
             per_kind[role] += 1
@@ -252,8 +275,10 @@ class Facts:
                 base = {"layer": info["layer"], "ids": info["fids"]}
             expr = {"stream": base} if role == "streams" else (base | {"merge": "lines"} if role == "roads" else base)
             pages = sorted({m["page"] for m in self.mentions.get(info["name"], [])})
-            self._add(role, info["name"], info["layer"], expr, dict(code=info.get("id"), mention_pages=pages,
-                                                                    mention_count=len(self.mentions.get(info["name"], []))))
+            cid = self._add(role, info["name"], info["layer"], expr, dict(code=info.get("id"), mention_pages=pages,
+                                                                          mention_count=len(self.mentions.get(info["name"], []))))
+            if role != "names":
+                kept.append((role, geom, cid))
         # road kilometre markers whose value is mentioned
         kms = _km_values(self.pages)
         for lname, info in self._layers_with("road_km"):
@@ -333,10 +358,36 @@ class Facts:
             s, ln = min(mentioned_streams.items(), key=lambda kv: kv[1].distance(p))
             c.setdefault("facts", {}).update(near_stream=s, along_m_from_mouth=round(ln.project(p), 1),
                                              lateral_m=round(ln.distance(p), 1), xy=[round(p.x), round(p.y)])
+        # bridges: which stream they cross (and where), and which road they carry. Lets the model identify a bridge
+        # the report calls by a local name ("bridge Lochmure") as the only road bridge over that stream.
+        roads = {cid: self.ev.geom(c["expr"]) for cid, c in self.candidates.items() if c["kind"] == "roads"}
+        for cid, c in self.candidates.items():
+            if c["kind"] != "bridges":
+                continue
+            f = c.setdefault("facts", {})
+            try:
+                g = self.ev.geom(c["expr"])
+            except Exception:
+                continue
+            crossing = [(s, ln) for s, ln in streams.items() if ln.distance(g) <= 15]
+            if crossing:
+                s, ln = min(crossing, key=lambda kv: kv[1].distance(g))
+                d = ln.project(g.representative_point())
+                same = [o for o, oc in self.candidates.items() if oc["kind"] == "bridges" and o != cid
+                        and ln.distance(self.ev.geom(oc["expr"])) <= 15]
+                f["crosses"] = f"{s} at {d:.0f} m from its mouth (hm {d / 100:.2f})" + (
+                    "; the only bridge candidate on this stream" if not same else f"; other bridges on it: {same}")
+            carried = [r for r, rg in roads.items() if rg.distance(g) <= 15]
+            if carried:
+                f["carries_road"] = carried
         for cid, c in self.candidates.items():
             f = c.get("facts", {})
             bits = [f"{c['kind']} '{c['name']}'" + (f" [{c['code']}]" if c.get("code") else "")]
-            bits += [f"{k}={v}" for k, v in f.items() if k not in ("tributaries",)]
+            if c.get("aliases"):
+                bits.append(f"also named {c['aliases']}")
+            first = ("crosses", "carries_road", "flows_into")
+            bits += [f"{k}={f[k]}" for k in first if k in f]
+            bits += [f"{k}={v}" for k, v in f.items() if k not in ("tributaries", *first)]
             if f.get("tributaries"):
                 bits.append("tributaries: " + "; ".join(f"{t['stream']} {t['name']} at {t['at_m_from_mouth']} m (hm {t['at_hm']})" for t in f["tributaries"]))
             bits.append(f"mentioned on pages {c['mention_pages']}" if c.get("mention_pages") else "not mentioned in the report")
