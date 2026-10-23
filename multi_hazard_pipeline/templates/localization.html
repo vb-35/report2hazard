@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Localization · {{ test.event if test else manifest.run_id }}{% endblock %}
+{% block content %}
+{% if test %}<a href="{{ url_for('index') }}">← All reports and tests</a>
+{% else %}<a href="{{ url_for('run_detail', run_id=manifest.run_id) }}">← Back to report review</a>{% endif %}
+<div class="hero"><p class="eyebrow">{{ 'LOCALIZATION TEST' if test else 'SPATIAL LOCALIZATION' }}</p>
+<h1>{{ test.event if test else 'Place the approved segments.' }}</h1>
+{% if test %}<p>Localization with your own segment table and spatial data. Extraction and human review were not run.</p>
+{% else %}<p>{{ manifest.inputs | map(attribute='filename') | join(', ') }}</p>
+<p>Combine report evidence with a local GIS package, then inspect the map, uncertainties, and spatial exports.</p>{% endif %}</div>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+{% if manifest.status != 'approved' %}<p class="message">Approve this report in the review workspace to enable localization.</p>{% endif %}
+{% if test %}
+<section class="panel" aria-labelledby="inputs-heading">
+<h2 id="inputs-heading">Provided inputs</h2>
+<dl>
+<div><dt>Report</dt><dd>{{ test.reports | join(', ') }}</dd></div>
+<div><dt>Segment table</dt><dd>{{ test.table }} · {{ test.segments }} segment(s)</dd></div>
+<div><dt>Spatial data</dt><dd class="path">{% if test.spatial_files %}Generated package from {{ test.spatial_files | length }} file(s){% else %}{{ test.package }}{% endif %}</dd></div>
+{% if test.spatial_files %}<div><dt>GIS files</dt><dd><ul class="path-list">{% for path in test.spatial_files %}<li>{{ path }}</li>{% endfor %}</ul></dd></div>{% endif %}
+</dl>
+</section>
+{% endif %}
+<section id="localization-state" class="panel status state-{{ state.info.status or 'none' }}" data-status-url="{{ url_for('localization_status', run_id=manifest.run_id) }}" data-approved="{{ 'true' if manifest.status == 'approved' else 'false' }}" aria-labelledby="progress-heading">
+<div class="section-heading"><h2 id="progress-heading">Localization status</h2>
+<span id="localization-status" class="badge" role="status">{{ state.status_label }}</span></div>
+{% if test %}<ol id="localization-stages" class="stage-states">{% for stage in test.stages %}<li class="stage-{{ stage.status }}">{{ stage.label }} · {{ stage.status }}</li>{% endfor %}</ol>{% endif %}
+<p id="localization-activity" aria-live="polite">{{ state.info.activity or 'Choose a spatial package to begin.' }}</p>
+<div class="progress-row"><progress id="localization-progress" max="{{ state.total or 1 }}" value="{{ state.processed }}"></progress>
+<span id="localization-counters">{{ state.processed }} of {{ state.total }} segment decisions saved · {{ state.model_calls }} model calls</span></div>
+<p id="localization-connection" class="warning" role="status" hidden></p>
+<div id="localization-issues" role="status"></div>
+<details><summary>Processing log</summary><ol id="localization-log" class="localization-log"></ol></details>
+</section>
+<section class="panel" aria-labelledby="results-heading">
+<div class="section-heading"><h2 id="results-heading">Spatial results</h2><a id="localization-map-link" class="button secondary" target="_blank" rel="noopener" hidden>Open map in a new tab</a></div>
+<p class="hint">Location and boundary confidence are independent. An unresolved segment has no geometry. Review these spatial results before using them.</p>
+<p id="localization-output-notice" role="status"></p>
+<iframe id="localization-map" title="Localized segments map" sandbox="allow-scripts allow-downloads" loading="lazy" hidden></iframe>
+<div class="localization-table"><table><thead><tr><th>Segment</th><th>Outcome</th><th>Precision</th><th>Event confidence</th><th>Location confidence</th><th>Boundary confidence</th><th>Reason</th></tr></thead><tbody id="localization-results"></tbody></table></div>
+<h3 class="downloads-heading">Downloads</h3>
+<div id="localization-downloads" class="actions"></div>
+</section>
+<section class="panel" aria-labelledby="setup-heading">
+<details id="setup-details" {% if not existing or error %}open{% endif %}>
+<summary><h2 id="setup-heading">{{ 'Run again or resume' if existing else 'Localization setup' }}</h2></summary>
+<p class="hint">Use file paths on this computer. A spatial package JSON declares the catchment, streams, elevation raster, and optional layers; its data paths stay relative to that JSON.</p>
+<form id="localization-form" method="post" action="{{ url_for('start_localization', run_id=manifest.run_id) }}">
+<fieldset id="localization-fields" {% if state.busy or manifest.status != 'approved' %}disabled{% endif %}>
+<label>Spatial package JSON<input name="package" required value="{{ settings.package or '' }}" placeholder="C:\GIS\area\package.json"></label>
+<label class="checkbox"><input type="checkbox" name="resume" {% if existing %}checked{% endif %}>Resume saved localization (requires unchanged inputs and settings)</label>
+{% if test %}<label class="checkbox"><input type="checkbox" name="translate" {% if settings.translate is not defined or settings.translate %}checked{% endif %}>Translate the report text to English if it is not translated yet</label>{% endif %}
+{% include "_localization_options.html" %}
+<button type="submit">{{ 'Start again' if existing else 'Start localization' }}</button>
+</fieldset>
+</form>
+</details>
+</section>
+<script id="localization-data" type="application/json">{{ state | tojson }}</script>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>{% endblock %}

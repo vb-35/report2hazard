@@ -65,6 +65,7 @@
 </div>
 <section id="review-actions" class="review-actions" aria-labelledby="review-heading">
 <div class="section-heading"><h2 id="review-heading">Human review</h2><div id="exports">
+<a id="localization-access" class="button secondary" href="{{ url_for('localization_detail', run_id=manifest.run_id) }}" {% if manifest.status != 'approved' %}hidden{% endif %}>Localize segments</a>
 <a id="candidate-download" class="button secondary" href="{{ url_for('download', run_id=manifest.run_id, artifact='candidate_report.json') }}" {% if not candidate %}hidden{% endif %}>Candidate JSON</a>
 <a class="button approved-export" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.csv') }}" {% if manifest.status != 'approved' %}hidden{% endif %}>Approved CSV</a>
 <a class="button approved-export" href="{{ url_for('download', run_id=manifest.run_id, artifact='final_rows.json') }}" {% if manifest.status != 'approved' %}hidden{% endif %}>Approved JSON</a>

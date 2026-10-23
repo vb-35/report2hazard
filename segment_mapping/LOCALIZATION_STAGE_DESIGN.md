@@ -144,7 +144,7 @@ A reviewer prompt gets the compiled parts table: method, args, classification, a
 ### L6 Deliver and spatial review
 
 - `deliver` writes canonical mixed `segments.geojson`, an optional polygon-only shapefile, complete result JSON/CSV, evidence, map, README, report and ZIP. Points/lines retain native geometry and null area. Leaflet/data are embedded; web tiles are optional. Entirely unresolved runs remain exportable.
-- Browser-based spatial review with per-part approval/correction remains future work; current review is through the exported map and report.
+- The local review interface can launch/resume localization for each approved report, monitor its activity and diagnostics, and show the map, segment outcomes and downloads. Browser-based per-part spatial approval/correction remains future work.
 - Completion distinguishes `delivered`, `delivered_with_unresolved`, `partial`, `incomplete`, `review_incomplete`, `revision_required`, `build_errors`, `validation_errors`, `failed`. Outstanding issues/failures cannot become ordinary delivered success. Web spatial approval remains future work.
 
 ## 5. Method menu (templates → toolkit expressions)

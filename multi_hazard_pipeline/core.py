@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,24 @@ def resolve_path(path: str | Path) -> Path:
     if value.startswith("\\\\"):
         return Path("\\\\?\\UNC\\" + value[2:])
     return Path("\\\\?\\" + value)
+
+
+def display_path(path: str | Path) -> str:
+    """Show a path without the Windows long-path prefix added by resolve_path."""
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    return text.removeprefix("\\\\?\\")
+
+
+def bounded_filename(filename: str, max_length: int = 180) -> str:
+    """Bound an ASCII filename component, retaining its suffix and a stable identity."""
+    if len(filename) <= max_length:
+        return filename
+    suffix = Path(filename).suffix
+    digest = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:12]
+    stem = filename[:max_length - len(suffix) - len(digest) - 1].rstrip(" .-_")
+    return f"{stem}-{digest}{suffix}"
 
 
 @contextmanager

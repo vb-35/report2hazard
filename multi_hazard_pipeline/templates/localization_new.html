@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Localization test · Multi-hazard review{% endblock %}
+{% block content %}
+<div class="hero"><p class="eyebrow">LOCALIZATION TEST</p>
+<h1>Map your own segments.</h1>
+<p>Run only the localization pipeline with a segment table and GIS data you provide. Extraction and human review are skipped, and your segment table is used exactly as supplied.</p></div>
+<ol class="steps"><li><strong>1. Report</strong><span>Evidence for quotes, page references and images</span></li><li><strong>2. Segments</strong><span>Your table of segments for one event</span></li><li><strong>3. Spatial data</strong><span>A spatial package or separate GIS files</span></li></ol>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+{% set spatial = form.get('spatial_source', 'package') %}
+<form id="provided-form" method="post" action="{{ url_for('start_provided_localization') }}" enctype="multipart/form-data">
+<section class="panel form-section" aria-labelledby="report-heading">
+<h2 id="report-heading"><span class="step-number">1</span>Report</h2>
+<p class="hint">The report is read for evidence only.{% if error %} Uploaded files must be selected again after an error.{% endif %}</p>
+<label class="upload-zone">Choose the report files
+<input type="file" name="report_files" accept=".docx,.pdf,.txt" multiple>
+<span class="hint">PDF, DOCX or TXT · several files only if they form one report</span></label>
+<details {% if form.get('report_path') %}open{% endif %}><summary>Use a file or folder on this computer instead</summary>
+<label>Report file or folder<input name="report_path" value="{{ form.get('report_path', '') }}" placeholder="C:\data\Seigesbach\report.pdf"></label>
+</details>
+</section>
+<section class="panel form-section" aria-labelledby="table-heading">
+<h2 id="table-heading"><span class="step-number">2</span>Segment table</h2>
+<p class="hint">Tab-separated (.tsv), comma-separated (.csv) or .txt with a header row. It needs a segment ID column and a process column; event, category, interaction type and sediment transport phase columns are used when present. In Excel, save the sheet as “Text (Tab delimited)”.</p>
+<div class="field-pair">
+<label>Upload the table<input type="file" name="segments_file" accept=".tsv,.csv,.txt"></label>
+<p class="or">or</p>
+<label>Table file on this computer<input name="segments_path" value="{{ form.get('segments_path', '') }}" placeholder="C:\data\Seigesbach\segments_input.tsv"></label>
+</div>
+<label>Event<input name="event" value="{{ form.get('event', '') }}" placeholder="Required only when the table lists several events"></label>
+</section>
+<section class="panel form-section" aria-labelledby="spatial-heading">
+<h2 id="spatial-heading"><span class="step-number">3</span>Spatial data</h2>
+<fieldset class="report-mode"><legend>How do you provide the GIS data?</legend>
+<label class="choice"><input type="radio" name="spatial_source" value="package" {% if spatial == 'package' %}checked{% endif %}>
+<span><strong>Spatial package JSON</strong><span class="hint">An existing package that declares the layers, rasters, roles and name fields.</span></span></label>
+<label class="choice"><input type="radio" name="spatial_source" value="files" {% if spatial == 'files' %}checked{% endif %}>
+<span><strong>Separate GIS files</strong><span class="hint">Catchment, streams and DEM files. A package is generated for this test; your files are referenced, not copied.</span></span></label>
+</fieldset>
+<fieldset id="spatial-package" class="spatial-group" {% if spatial != 'package' %}hidden disabled{% endif %}>
+<label>Spatial package JSON<input name="package" required value="{{ form.get('package', '') }}" placeholder="C:\GIS\area\package.json"></label>
+<p class="hint">Data paths inside the package stay relative to the JSON file.</p>
+</fieldset>
+<fieldset id="spatial-files" class="spatial-group" {% if spatial != 'files' %}hidden disabled{% endif %}>
+<p class="hint">Use file paths on this computer: GeoPackage, shapefile (.shp with its sidecar files) or GeoJSON for vectors, and GeoTIFF for the DEM. Name fields are detected when left empty.</p>
+<label>Elevation model (DEM)<input name="dem" required value="{{ form.get('dem', '') }}" placeholder="C:\GIS\area\dem.tif"></label>
+{% for role, label, required in file_layers if required %}
+<div class="layer-row"><label>{{ label }}<input name="{{ role }}" required value="{{ form.get(role, '') }}" placeholder="C:\GIS\area\{{ role }}.gpkg"></label>
+<label>Name field<input name="{{ role }}_name_field" value="{{ form.get(role ~ '_name_field', '') }}" placeholder="Detect"></label></div>
+{% endfor %}
+{% set optional_used = [] %}{% for role, label, required in file_layers if not required and form.get(role) %}{% set _ = optional_used.append(role) %}{% endfor %}
+<details {% if optional_used %}open{% endif %}><summary>Optional context layers</summary>
+{% for role, label, required in file_layers if not required %}
+<div class="layer-row"><label>{{ label }}<input name="{{ role }}" value="{{ form.get(role, '') }}" placeholder="Optional file path"></label>
+<label>Name field<input name="{{ role }}_name_field" value="{{ form.get(role ~ '_name_field', '') }}" placeholder="Detect"></label></div>
+{% endfor %}
+</details>
+<label>Local CRS<input name="crs" value="{{ form.get('crs', '') }}" placeholder="Detected from the catchment or DEM, e.g. EPSG:31254"></label>
+</fieldset>
+</section>
+<section class="panel form-section" aria-labelledby="settings-heading">
+<h2 id="settings-heading"><span class="step-number">4</span>Settings</h2>
+<label class="checkbox"><input type="checkbox" name="translate" {% if not form or form.get('translate') %}checked{% endif %}>Translate the report text to English first (one extra model step)</label>
+{% include "_localization_options.html" %}
+<p id="provided-message" role="status" aria-live="polite"></p>
+<button type="submit">Start localization test →</button>
+</section>
+</form>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='localization_new.js') }}" defer></script>{% endblock %}

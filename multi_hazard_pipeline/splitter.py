@@ -12,7 +12,7 @@ from typing import Any, Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, resolve_path, restore_source_quote
+from .core import bounded_filename, normalize_text, resolve_path, restore_source_quote
 from .errors import PipelineError
 from .llm import ChatClient
 from .schemas import event_separation_response_schema
@@ -250,6 +250,7 @@ def validate_ranges(ranges: Iterable[EventRange], page_count: int) -> None:
 def safe_event_filename(event: EventRange, page_count: int) -> str:
     ascii_title = unicodedata.normalize("NFKD", event.title).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.casefold()).strip("-") or "event"
+    slug = bounded_filename(slug, 100)
     width = max(3, len(str(page_count)))
     return (
         f"{event.sequence:02d}-{slug}_pages-"
@@ -403,7 +404,7 @@ def _write_ranges(input_pdf: Path, output_dir: Path, ranges: list[EventRange]) -
             for page_index in range(event.start_page - 1, event.end_page):
                 writer.add_page(reader.pages[page_index])
             handle = tempfile.NamedTemporaryFile(
-                mode="wb", prefix=f".{output.stem}-", suffix=".tmp", dir=output_dir, delete=False
+                mode="wb", prefix=".split-", suffix=".tmp", dir=output_dir, delete=False
             )
             temp_path = Path(handle.name)
             temporary.append(temp_path)

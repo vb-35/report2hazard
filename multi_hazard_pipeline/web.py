@@ -14,13 +14,14 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.utils import secure_filename
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import read_json, resolve_path, run_lock
+from .core import bounded_filename, display_path, read_json, resolve_path, run_lock
 from .errors import PipelineError
 from .human_review import apply_candidate_edits, approve_run, reject_run, request_correction
 from .llm import ChatClient
 from .pipeline import create_run, execute_run, invalidate_results, new_run_id, save_manifest, utc_now
 from .agents.source_agent import discover_inputs
 from .splitter import split_event_reports
+from .provided_localization import is_provided
 from .workspace import workspace_data
 
 
@@ -234,25 +235,33 @@ def _list_runs(root: Path) -> list[dict[str, Any]]:
             summary = _collection_data(root, manifest)
             runs.append({**summary, "collection": True, "created_at": manifest.get("created_at", ""),
                          "report_count": len(summary["reports"])})
+        elif is_provided(manifest):
+            from .localization_web import status_label
+
+            info = manifest.get("localization") or {}
+            runs.append({
+                "run_id": manifest.get("run_id"), "title": manifest.get("event") or _title(manifest),
+                "collection": False, "kind": "localization", "status": info.get("status") or "queued",
+                "status_label": status_label(info.get("status")), "activity": info.get("activity") or "",
+                "subtitle": _title(manifest), "created_at": manifest.get("created_at", ""),
+                "url": url_for("localization_detail", run_id=manifest.get("run_id")),
+            })
         else:
             status = _display_status(manifest)
+            localization = (manifest.get("localization") or {}).get("status")
             runs.append({
                 "run_id": manifest.get("run_id"), "title": _title(manifest), "collection": False,
                 "status": status, "status_label": STATUS_LABELS.get(status, status),
                 "activity": (manifest.get("current_stage") or "").replace("_", " ").capitalize(),
                 "progress": manifest.get("progress") or 0, "created_at": manifest.get("created_at", ""),
+                "localization": localization,
             })
     for run in runs:
         run["folder"] = _display_path(root / run["run_id"])
     return sorted(runs, key=lambda item: item["created_at"], reverse=True)
 
 
-def _display_path(path: Path) -> str:
-    """Show a path without the Windows long-path prefix added by resolve_path."""
-    text = str(path)
-    if text.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + text[8:]
-    return text.removeprefix("\\\\?\\")
+_display_path = display_path
 
 
 def _input_copy_dir(root: Path, path_text: str) -> Path | None:
@@ -297,7 +306,9 @@ def _delete_run(root: Path, run_dir: Path) -> None:
             raise PipelineError("This report belongs to a collection; delete the whole collection instead.")
         doomed = [run_dir.name] + [child["run_id"] for child in manifest.get("child_runs") or []
                                    if child["run_id"] in manifests]
-        if any(manifests[run_id].get("status") in {"running", "queued"} for run_id in doomed):
+        if any(manifests[run_id].get("status") in {"running", "queued"}
+               or (manifests[run_id].get("localization") or {}).get("status") in {"running", "queued"}
+               for run_id in doomed):
             raise PipelineError("This run is still processing. Wait until it finishes before deleting it.")
         copies = {_input_copy_dir(root, item.get("path", ""))
                   for run_id in doomed for item in manifests[run_id].get("inputs", [])}
@@ -412,7 +423,7 @@ def create_app(
                 selected: list[Path] = []
                 seen: set[str] = set()
                 for upload in uploads:
-                    filename = secure_filename(upload.filename or "")
+                    filename = bounded_filename(secure_filename(upload.filename or ""))
                     if not filename or Path(filename).suffix.lower() not in SUPPORTED_SUFFIXES:
                         raise PipelineError(f"unsupported report file: {upload.filename}")
                     if filename.casefold() in seen:
@@ -454,6 +465,9 @@ def create_app(
         manifest = read_json(run_dir / "manifest.json")
         if _is_collection(manifest):
             return render_template("collection.html", collection=_collection_data(root, manifest))
+        if is_provided(manifest):
+            # A localization test has no extraction to review.
+            return redirect(url_for("localization_detail", run_id=run_id))
         status = _display_status(manifest)
         return render_template(
             "run.html",
@@ -627,6 +641,9 @@ def create_app(
             abort(404)
         return send_file(path, as_attachment=True, download_name=artifact)
 
+    from .localization_web import register_localization
+
+    register_localization(app, config, lambda run_id: _run_dir(app, run_id))
     return app
 
 

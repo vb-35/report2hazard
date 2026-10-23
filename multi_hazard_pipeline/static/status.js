@@ -91,6 +91,7 @@
     reject.disabled = !reviewable() || submitting;
     $('[value="request_correction"]').disabled = !reviewable() || !remaining || submitting;
     document.querySelectorAll('.approved-export').forEach(a => { a.hidden = m.status !== 'approved'; });
+    $('#localization-access').hidden = m.status !== 'approved';
     $('#candidate-download').hidden = state.results?.kind !== 'candidate_report.json';
     window.candidateEditor?.bind(selectedRow(), state.results?.revision, reviewable());
   }

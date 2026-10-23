@@ -39,6 +39,12 @@ Previous reports remain under **Your reports**. Results are saved in the ignored
 
 On Windows, the pipeline uses extended-length filesystem paths for deeply nested project folders, including PDF splitting and exports. No Windows long-path setting change is required.
 
+After approving an individual report, click **Localize segments** next to its approved downloads. Choose the local spatial `package.json` (including catchment, streams, and DEM), then start localization. This also works for each approved child of a multi-report collection. The page shows live activity, saved segment decisions, model calls, diagnostics, spatial outcomes, an interactive map, and available GIS/review downloads. Localization uses the same single-worker queue as extraction. Its failures preserve the report's approval and approved CSV/JSON; active localization prevents deletion of the report or its collection.
+
+Localization defaults to report text plus images, spatial self-review, and a browser map check. Text-only processing, optional public GIS acquisition, reviewed figure outlines, model/service overrides, segment subsets, and alternative segment tables are available on the page. Existing localization folders require **Resume** with matching inputs/settings; incompatible checkpoints fail without replacing saved outputs. Spatial results still require inspection; this interface does not record spatial approval.
+
+Uploaded filenames and split event headings are bounded with stable hashes when shortened, and split PDF temporary names stay short. This handles Windows' separate filename-component limit as well as deep folder paths, retaining distinct names for reports whose long headings share a prefix.
+
 ## Command-line usage
 
 Install dependencies and set the server-side LLM key:

@@ -336,9 +336,12 @@ def check_long_paths(root):
         font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
                                  NameObject("/Subtype"): NameObject("/Type1"),
                                  NameObject("/BaseFont"): NameObject("/Helvetica")})
-        texts = ["4.1 Schallerbach. Heavy rainfall mobilized sediment into the channel.",
+        heading_detail = " sediment transport, erosion and infrastructure damage" * 12
+        first_title = "4.1 Schallerbach" + heading_detail
+        second_title = "4.2 Seigesbach" + heading_detail
+        texts = [first_title + ". Heavy rainfall mobilized sediment into the channel.",
                  "Debris blocked the bridge.",
-                 "4.2 Seigesbach. Heavy rainfall mobilized sediment into the channel.",
+                 second_title + ". Heavy rainfall mobilized sediment into the channel.",
                  "Debris blocked the bridge."]
         for text in texts:
             page = writer.add_blank_page(width=600, height=800)
@@ -348,8 +351,8 @@ def check_long_paths(root):
             stream.set_data(f"BT /F1 12 Tf 40 740 Td ({text}) Tj ET".encode("ascii"))
             page[NameObject("/Contents")] = stream
         writer.write(str(source))
-        ranges = [splitter.EventRange(1, "4.1 Schallerbach", 1, 2),
-                  splitter.EventRange(2, "4.2 Seigesbach", 3, 4)]
+        ranges = [splitter.EventRange(1, first_title, 1, 2),
+                  splitter.EventRange(2, second_title, 3, 4)]
         assert len(str(output / ".01-4-1-schallerbach_pages-001-002-12345678.tmp")) == 268
         outputs = splitter._write_ranges(source, output, ranges)
         for index, path in enumerate(outputs):
@@ -357,6 +360,19 @@ def check_long_paths(root):
             assert len(pages) == 2
             assert [page.extract_text() for page in pages] == texts[index * 2:index * 2 + 2]
         assert not list(resolved.glob("*.tmp"))
+        # Extended paths do not bypass the per-component filename limit. Real headings
+        # can exceed 255 characters; preserve distinct identities and page provenance.
+        long_heading = "Catchment sediment transport and infrastructure damage " * 12
+        long_ranges = [splitter.EventRange(1, long_heading + "first", 1, 2),
+                       splitter.EventRange(2, long_heading + "second", 3, 4)]
+        long_outputs = splitter._write_ranges(source, output / "long-headings", long_ranges)
+        assert len({path.name for path in long_outputs}) == 2
+        assert all(len(path.name) < 180 for path in long_outputs)
+        assert all(len(PdfReader(str(path)).pages) == 2 for path in long_outputs)
+        assert "pages-001-002" in long_outputs[0].name
+        assert splitter.safe_event_filename(long_ranges[0], 4) != splitter.safe_event_filename(
+            splitter.EventRange(1, long_heading + "second", 1, 2), 4)
+        assert not list(long_outputs[0].parent.glob("*.tmp"))
         # Force failure after one temporary PDF has been written; cleanup must still work.
         with patch.object(splitter.PdfWriter, "write", side_effect=[None, OSError("disk full")]):
             with TestCase().assertRaises(PipelineError):
@@ -392,7 +408,7 @@ def check_long_paths(root):
             response = client.post("/runs", data={"files": (handle, "notes.txt"), "report_mode": "multi"})
         assert response.status_code == 400 and b"exactly one PDF" in response.data
         with patch.object(web.ChatClient, "from_config", return_value=CollectionClient()), source.open("rb") as handle:
-            response = client.post("/runs", data={"files": (handle, source.name), "report_mode": "multi"})
+            response = client.post("/runs", data={"files": (handle, "Annual Collection " * 25 + ".pdf"), "report_mode": "multi"})
         assert response.status_code == 303
         run_id = response.headers["Location"].rsplit("/", 1)[-1]
         artifact_root = resolve_path(artifact_root)
