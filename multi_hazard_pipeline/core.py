@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from json import JSONDecodeError
 from pathlib import Path
@@ -119,6 +120,22 @@ def parse_json_object(raw: str) -> Any:
             return json.JSONDecoder().raw_decode(sanitized)[0]
 
 
+def replace_file(source: str | Path, destination: str | Path) -> None:
+    """Atomically replace a file, allowing short-lived Windows reader/sync locks."""
+    source, destination = resolve_path(source), resolve_path(destination)
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            # OneDrive, antivirus scanners and open readers can briefly deny a
+            # rename even when both paths are valid and writable. Never fall
+            # back to truncating the destination: readers need a complete file.
+            if getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == 11:
+                raise
+            time.sleep(min(0.05 * 2 ** attempt, 0.5))
+
+
 def write_json(path: Path, payload: Any) -> None:
     path = resolve_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +143,7 @@ def write_json(path: Path, payload: Any) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as temporary:
             json.dump(payload, temporary, indent=2, ensure_ascii=True)
-        os.replace(temporary_name, path)
+        replace_file(temporary_name, path)
     except Exception:
         try:
             os.unlink(temporary_name)
@@ -149,7 +166,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]], columns: tuple[str, ...]) 
             writer.writeheader()
             for row in rows:
                 writer.writerow({key: row[key] for key in columns})
-        os.replace(temporary_name, path)
+        replace_file(temporary_name, path)
     except Exception:
         try:
             os.unlink(temporary_name)

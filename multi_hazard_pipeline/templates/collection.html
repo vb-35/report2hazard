@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ collection.title }} · Multi-hazard review{% endblock %}
+{% block body_class %}collection-page{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='workspace-modern.css') }}">{% endblock %}
 {% block content %}
 <div id="collection" data-url="{{ url_for('collection_status', run_id=collection.run_id) }}">
 <a href="{{ url_for('index') }}">← All runs</a>
@@ -7,7 +9,8 @@
 <h1>{{ collection.title }}</h1>
 <section class="panel status state-{{ collection.status }}" id="collection-status" aria-live="polite">
   <p><span class="badge" id="status-name">{{ collection.status_label }}</span> <span id="activity">{{ collection.activity }}</span></p>
-  <progress id="progress" max="100" value="{{ collection.progress }}">{{ collection.progress }}%</progress> <span id="progress-text">{{ collection.progress }}%</span>
+  <progress id="progress" max="100" value="{{ collection.progress }}">{{ collection.progress }}%</progress> <span id="progress-text">{{ collection.progress }}% overall</span>
+  <p class="hint" id="progress-detail">{{ collection.progress_detail }}</p>
   <ol id="stage-states" class="stage-states" aria-label="Collection stages">
     {% for stage in collection.stages %}<li class="stage-{{ 'running' if stage.status == 'awaiting' else stage.status }}">{{ stage.label }} · {{ stage.status }}</li>{% endfor %}
   </ol>

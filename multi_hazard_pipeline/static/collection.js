@@ -15,7 +15,11 @@
     $('#status-name').textContent = data.status_label;
     $('#activity').textContent = data.activity;
     $('#progress').value = data.progress;
-    $('#progress-text').textContent = `${data.progress}%`;
+    $('#progress-text').textContent = `${data.progress}% overall`;
+    const progressDetail = $('#progress-detail');
+    if (progressDetail) progressDetail.textContent = data.progress_detail || (data.reports.length
+      ? `Stage-based overall progress averaged across ${data.reports.length} reports; it advances when a report changes stage.`
+      : 'Preparation progress; report-level progress appears after separation.');
     $('#stage-states').replaceChildren(...data.stages.map(stage => node('li', `${stage.label} · ${stage.status}`, `stage-${stage.status === 'awaiting' ? 'running' : stage.status}`)));
     const diagnostics = [...data.warnings.map(item => `Warning: ${item.message || item}`), ...data.errors.map(item => `Pipeline failure${item.stage ? ' / ' + item.stage : ''}: ${item.message}`)];
     $('#diagnostic-count').textContent = `(${diagnostics.length})`;

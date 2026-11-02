@@ -342,6 +342,8 @@ def _ask(client: ChatClient, payload: dict[str, Any], page_texts: list[str], toc
         system_prompt=EVENT_SEPARATION_PROMPT,
         user_payload=payload,
         response_schema=event_separation_response_schema(),
+        request_attempts=max(5, client.config.retries) if isinstance(client, ChatClient) else 5,
+        request_retry_delay_seconds=5,
         validate=lambda response: validate_separation(
             response, page_texts, toc_pages, allow_empty=allow_empty
         ),

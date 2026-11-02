@@ -21,7 +21,7 @@ from .llm import ChatClient
 from .pipeline import create_run, execute_run, invalidate_results, new_run_id, save_manifest, utc_now
 from .agents.source_agent import discover_inputs
 from .splitter import split_event_reports
-from .workspace import workspace_data
+from .workspace import timing_statistics, workspace_data
 
 
 SUPPORTED_SUFFIXES = {".docx", ".pdf", ".txt"}
@@ -148,10 +148,23 @@ def _collection_data(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     """Summarize a multi-report collection from its live child run manifests."""
     reports = []
     for index, child in enumerate(manifest.get("child_runs") or [], 1):
+        child_dir = root / child["run_id"]
         try:
-            child_manifest = read_json(root / child["run_id"] / "manifest.json")
+            child_manifest = read_json(child_dir / "manifest.json")
         except (OSError, ValueError):
             child_manifest = {}
+        model_requests = 0
+        if child_manifest.get("status") == "running":
+            try:
+                active_stage = next(
+                    (stage for stage in timing_statistics(child_dir, child_manifest)["stages"]
+                     if stage["stage"] == child_manifest.get("current_stage")),
+                    None,
+                )
+                model_requests = active_stage["requests"] if active_stage else 0
+            except (OSError, ValueError):
+                # Status polling must remain available while a timing log is briefly locked or incomplete.
+                pass
         reports.append({
             "index": index,
             "run_id": child["run_id"],
@@ -159,6 +172,7 @@ def _collection_data(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
             "status": _display_status(child_manifest),
             "current_stage": child_manifest.get("current_stage"),
             "progress": child_manifest.get("progress") or 0,
+            "model_requests": model_requests,
             "url": url_for("run_detail", run_id=child["run_id"]),
         })
     statuses = {report["status"] for report in reports}
@@ -184,7 +198,10 @@ def _collection_data(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         activity = "Separating the PDF into individual reports"
     elif active:
         stage = (active["current_stage"] or "").replace("_", " ")
-        activity = f"Extracting report {active['index']} of {len(reports)} · {stage}"
+        requests = active["model_requests"]
+        request_label = "request" if requests == 1 else "requests"
+        request_activity = f" · {requests} model {request_label} completed" if requests else ""
+        activity = f"Processing report {active['index']} of {len(reports)} · {stage}{request_activity}"
     elif processing:
         activity = "Waiting for the next report to start"
     elif reports:
@@ -206,6 +223,11 @@ def _collection_data(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
         "activity": activity,
         "progress": round(sum(report["progress"] for report in reports) / len(reports))
         if reports else manifest.get("progress") or 0,
+        "progress_detail": (
+            f"Stage-based overall progress averaged across {len(reports)} reports; "
+            "it advances when a report changes stage."
+            if reports else "Preparation progress; report-level progress appears after separation."
+        ),
         "stages": [
             {"name": "preparation", "label": "Report separation", "status": preparation},
             {"name": "extraction", "label": "Report extraction", "status": extraction},

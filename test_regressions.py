@@ -18,7 +18,7 @@ from docx import Document
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from multi_hazard_pipeline import human_review, language, pipeline, splitter, web
+from multi_hazard_pipeline import core, human_review, language, pipeline, splitter, web
 from multi_hazard_pipeline.agents.classification_agent import _classification_prompt, classification_agent
 from multi_hazard_pipeline.agents.review_agent import CHECK_NAMES, review_agent
 from multi_hazard_pipeline.agents.segment_agent import (
@@ -390,8 +390,24 @@ def check_long_paths(root):
         with (output / "notes.txt").open("rb") as handle:
             response = client.post("/runs", data={"files": (handle, "notes.txt"), "report_mode": "multi"})
         assert response.status_code == 400 and b"exactly one PDF" in response.data
-        with patch.object(web.ChatClient, "from_config", return_value=CollectionClient()), source.open("rb") as handle:
+        real_replace = os.replace
+        blocked_parent_updates = []
+
+        def transient_collection_lock(source_path, destination):
+            if Path(destination).name == "manifest.json":
+                pending = read_json(Path(source_path))
+                if pending.get("status") == "split" and not blocked_parent_updates:
+                    blocked_parent_updates.append(str(destination))
+                    error = PermissionError("Windows temporarily denied the parent manifest replacement")
+                    error.winerror = 5
+                    raise error
+            return real_replace(source_path, destination)
+
+        with (patch.object(web.ChatClient, "from_config", return_value=CollectionClient()),
+              patch.object(core.os, "replace", side_effect=transient_collection_lock),
+              patch.object(core.time, "sleep"), source.open("rb") as handle):
             response = client.post("/runs", data={"files": (handle, source.name), "report_mode": "multi"})
+        assert len(blocked_parent_updates) == 1
         assert response.status_code == 303
         run_id = response.headers["Location"].rsplit("/", 1)[-1]
         artifact_root = resolve_path(artifact_root)
@@ -402,9 +418,29 @@ def check_long_paths(root):
         assert collection["status"] == "awaiting_human_review"
         assert [stage["status"] for stage in collection["stages"]] == ["completed", "completed", "awaiting"]
         assert [report["status"] for report in collection["reports"]] == ["awaiting_human_review"] * 2
+        assert collection["progress_detail"] == (
+            "Stage-based overall progress averaged across 2 reports; it advances when a report changes stage."
+        )
         page = client.get(f"/runs/{run_id}").data
-        assert b"MULTI-REPORT COLLECTION" in page and b"Extracted reports" in page
+        assert (b"MULTI-REPORT COLLECTION" in page and b"Extracted reports" in page
+                and b"Stage-based overall progress" in page)
         first, second = (child["run_id"] for child in manifest["child_runs"])
+        first_dir = artifact_root / first
+        saved_first_manifest = read_json(first_dir / "manifest.json")
+        write_json(first_dir / "manifest.json", {
+            **saved_first_manifest,
+            "status": "running",
+            "current_stage": "translation",
+            "progress": 20,
+        })
+        with (first_dir / "timings.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"type": "stage_start", "stage": "translation"}) + "\n")
+            handle.write(json.dumps({"type": "llm_call", "task": "translated_chunks", "attempt": 1,
+                                     "outcome": "pass", "elapsed_seconds": 1}) + "\n")
+        live_collection = client.get(f"/runs/{run_id}/collection").get_json()
+        assert live_collection["reports"][0]["model_requests"] == 1
+        assert "1 model request completed" in live_collection["activity"]
+        write_json(first_dir / "manifest.json", saved_first_manifest)
         assert f"/runs/{second}".encode() in client.get(f"/runs/{first}").data
         assert b"Report 2 of 2" in client.get(f"/runs/{second}").data
         assert first.encode() not in client.get("/").data

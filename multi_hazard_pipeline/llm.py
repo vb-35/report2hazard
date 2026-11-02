@@ -128,10 +128,19 @@ class ChatClient:
         response_schema: dict[str, Any] | None = None,
         timeout_seconds: float | None = None,
         total_timeout_seconds: float | None = None,
+        request_attempts: int | None = None,
+        request_retry_delay_seconds: float = 1.0,
     ) -> Any:
         last_error: Exception | None = None
         if self.config.retries < 1:
             raise PipelineError("chat request configuration requires at least one attempt")
+        if request_attempts is not None and request_attempts < 1:
+            raise PipelineError("chat request configuration requires at least one transport attempt")
+        if not math.isfinite(request_retry_delay_seconds) or request_retry_delay_seconds < 0:
+            raise PipelineError("chat request retry delay must be finite and non-negative")
+        max_attempts = max(self.config.retries, request_attempts or self.config.retries)
+        output_failures = 0
+        request_failures = 0
         for limit in (timeout_seconds, total_timeout_seconds):
             if limit is not None and (not math.isfinite(limit) or limit <= 0):
                 raise PipelineError("chat time limits must be finite and positive")
@@ -145,7 +154,7 @@ class ChatClient:
         if isinstance(user_payload, dict) and "candidate_report" in user_payload:
             segment_rows = user_payload["candidate_report"].get("rows", [])
         chunk_sizes = [len(chunk.get("text", "")) for chunk in chunks]
-        for attempt in range(1, self.config.retries + 1):
+        for attempt in range(1, max_attempts + 1):
             started = perf_counter()
             request_timeout = self.config.timeout_seconds
             if timeout_seconds is not None:
@@ -192,7 +201,10 @@ class ChatClient:
                     # Validators can make nested model calls (citation verification).
                     outcome = "request_error"
                     retryable = exc.retryable
-                    retry_delay = exc.retry_after if exc.retry_after is not None else min(2 ** (attempt - 1), 8)
+                    retry_delay = exc.retry_after if exc.retry_after is not None else min(
+                        request_retry_delay_seconds * 2 ** request_failures,
+                        max(8, request_retry_delay_seconds * 6),
+                    )
                 elif outcome == "pass":
                     outcome = "parsing_error" if isinstance(exc, (json.JSONDecodeError, UnicodeDecodeError)) else "request_error"
                     if isinstance(exc, json.JSONDecodeError):
@@ -202,8 +214,11 @@ class ChatClient:
                         failed_answer = exc.object.decode("utf-8", errors="replace")
                         response_chars = len(failed_answer)
                 if outcome in {"parsing_error", "validation_error"}:
+                    output_failures += 1
                     retryable = True
                     repair = {"answer": failed_answer, "error": f"{type(exc).__name__}: {exc}", "kind": outcome}
+                else:
+                    request_failures += 1
             else:
                 outcome = "pass"
             if failure is not None and retryable and deadline is not None:
@@ -215,6 +230,8 @@ class ChatClient:
                     )
                     outcome = "request_error"
                     retryable = False
+            if output_failures >= self.config.retries or request_failures >= (request_attempts or self.config.retries):
+                retryable = False
             if self.timing_path is not None:
                 append_timing(self.timing_path, {
                     "type": "llm_call", "task": task, "attempt": attempt, "outcome": outcome,
@@ -229,11 +246,11 @@ class ChatClient:
                     "error_type": type(failure).__name__ if failure else None,
                     "error": str(failure) if failure else None,
                     "usage": payload.get("usage") if isinstance(payload, dict) else None,
-                    "retry_delay_seconds": retry_delay if retryable and attempt < self.config.retries else None,
+                    "retry_delay_seconds": retry_delay if retryable and attempt < max_attempts else None,
                 })
             if failure is None:
                 return parsed
-            if not retryable or attempt == self.config.retries:
+            if not retryable or attempt == max_attempts:
                 break
             if retry_delay:
                 sleep(retry_delay)

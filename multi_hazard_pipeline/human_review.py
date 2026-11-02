@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from pathlib import Path
 import traceback
@@ -9,7 +8,7 @@ import uuid
 
 from .agents import review_agent
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, read_json, resolve_path, run_lock, write_csv, write_json
+from .core import normalize_text, read_json, replace_file, resolve_path, run_lock, write_csv, write_json
 from .errors import PipelineError
 from .language import language_summary, recorded_language_config
 from .llm import ChatClient
@@ -130,8 +129,8 @@ def _approve_run_unlocked(
         write_csv(pending_csv, candidate["rows"], config.export_columns)
         write_json(run_dir / "human_review.json", human)
         save_manifest(run_dir, manifest)
-        os.replace(pending_json, run_dir / "final_rows.json")
-        os.replace(pending_csv, run_dir / "final_rows.csv")
+        replace_file(pending_json, run_dir / "final_rows.json")
+        replace_file(pending_csv, run_dir / "final_rows.csv")
         save_manifest(run_dir, manifest)
     except Exception as exc:
         for path in (pending_json, pending_csv, run_dir / "final_rows.json", run_dir / "final_rows.csv"):

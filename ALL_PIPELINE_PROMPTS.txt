@@ -1,0 +1,1749 @@
+ALL PIPELINE PROMPTS — 12 October 2026
+
+Exact fixed prompt text from the current project, with shared rules and default controlled labels expanded. Report text, glossary mappings, and correction feedback are dynamic JSON inputs. Response schemas are supplied separately. Every system prompt receives the common JSON rule in section 10.
+
+========================================================================
+
+1. EVENT SEPARATION (PDF collection preprocessing)
+Source: multi_hazard_pipeline/splitter.py
+
+Identify starts of independent event reports in a PDF collection.
+An event report is a self-contained report about one occurrence or one connected multi-hazard occurrence.
+Multiple hazards do not automatically mean multiple events. Flooding, erosion, sediment transport,
+debris flow, landslide, and damage may belong to one causal event. Geographic headings such as Tirol,
+Steiermark, or Kärnten are containers, not event reports. Internal subsections such as Beschreibung des
+Einzugsgebietes, Ereignisbeschreibung, Schäden, Sofortmaßnahmen, Fotodokumentation, and
+Niederschlagsanalyse belong to the surrounding event report. TOC occurrences are never sufficient
+evidence of an actual start: every valid start needs a heading_quote from the actual content page.
+Overview statistics, meteorological summaries, introductions, conclusions, tables of figures, and
+bibliographies are not event reports. Return verified starts, not page ranges, and identify the first page
+after the event-report collection when present. Never invent titles, events, dates, locations, or
+boundaries. Return status review_required for ambiguous structure, including two reports starting on one
+physical page. Page numbers are physical 1-based PDF pages.
+
+The input encodes outline rows as [hierarchy_level, physical_page, bookmark_title] and page_context rows
+as [physical_page, extracted_text]. Return exactly one JSON object with these keys and no others:
+{"status":"pass","events":[{"title":"visible heading title","start_page":1,
+"heading_quote":"exact visible heading","confidence":0.99}],"collection_end":{"page":10,
+"heading_quote":"exact first post-collection heading"},"warnings":[]}. collection_end may be null.
+Do not return a bare array. Do not put the collection-end heading in events.
+
+========================================================================
+
+2. SOURCE-TEXT EXTRACTION — no LLM prompt
+Source: multi_hazard_pipeline/agents/source_agent.py
+
+Python reads DOCX paragraphs and tables using python-docx, PDF pages using pdfplumber with pypdf fallback for empty extracted pages, and TXT files as UTF-8. Text is normalized and chunked with source provenance. Local language detection and the translation decision in language.py also have no LLM prompt.
+
+========================================================================
+
+3. TRANSLATION
+Source: multi_hazard_pipeline/agents/translation_agent.py
+
+Translate every supplied report chunk into English and return JSON only as
+{"translations":[{"chunk_id":"...","source_language":"English|German|French|Italian|Mixed","translated_text":"..."}]}.
+
+Rules:
+- Return exactly one result per chunk, in the supplied order, using the exact request-local chunk_id. Respect document boundaries and supplied locations.
+- Use the local language hints. Resolve Unknown text only within English, German, French, or Italian; unsupported or still unresolved substantive text is an explicit error, never an invented translation.
+- Translate mixed chunks as a whole, retaining their existing English passages unchanged except whitespace normalization. Label them Mixed. English text must pass through unchanged except whitespace normalization; do not semantically rewrite it.
+- Translate faithfully. Do not summarize, classify, omit, combine, explain, or invent information.
+- Preserve named places, torrents, rivers, structures, numbers, units, dates, directions, negation, uncertainty, and causal relationships.
+- For corrections, start with review_issues and the previous_answer. Repair the supplied affected passages, using the
+  complete previous chain to understand consequences. Retain valid wording within those passages. Correction chunk IDs
+  are permanent source IDs shared with previous_answer; Python retains translations outside the supplied chunks.
+- Use the supplied terminology mappings as contextual guidance, not mechanical string replacement. Select the term matching the source meaning and preserve distinctions, including German Murgang (debris flow) versus Hangmure (slope debris flow).
+
+========================================================================
+
+4. SEGMENTATION / CAUSAL-PROCESS EXTRACTION
+Source: multi_hazard_pipeline/agents/segment_agent.py
+
+Extract evidence for major stages of the main hazard event from the supplied source, allowing relevant independent branches.
+Final grouping occurs across the whole document; within this batch, merge repeated observations of the same stage. Return JSON only as
+{"segments":[{"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"...","process":"...","evidence":[{"chunk_id":"...","quote":"..."}]}]}.
+
+Rules:
+- A segment is one distinct causal-process step: what happened, why it happened, or what it caused. It is not every sentence, number, observation, or location.
+- Order causes before their evidenced effects. Use contiguous causal_order values beginning at 1; this is a list order, not proof of causation. segment is a positive integer ID; Python preserves IDs for unchanged steps across revisions.
+- predecessor_segment_ids may be empty, including for later steps; otherwise cite only real, earlier segment numbers whose direct causal relationship is supported by source evidence. Chronological order, adjacent sentences, or a shared location alone do not prove causation. Preserve uncertain causal claims as uncertain rather than adding established links. Independent branches and multiple roots are valid.
+- Every segment needs at least one evidence citation. Use only supplied chunk IDs and copy an exact quote or a whitespace-normalized substring from that chunk.
+- Use translated_text for semantic interpretation. When translation_applied is false, this is original-language passthrough: interpret all minority-language passages directly, including German, French, Italian, and mixed text. Do not omit them. event and process must always be written in English.
+- When no separate translated_text is supplied, interpret text directly in its original language; identical translations are omitted. Chunk and document IDs are request-local. Respect document boundaries, filenames, and source locations.
+- Evidence quote must remain in the original source language: copy it only from the chunk's text field, never from translated_text.
+- PDF extraction may contain replacement characters (�) or broken words. Quote a short contiguous fragment exactly as supplied in text; do not repair its spelling or accents in the quote.
+- Merge repeated descriptions and quantities for the same causal step and retain every useful citation. Merge a cause with its immediate consequence only when the reference abstraction treats them as one statement.
+- Separate materially different causal steps, especially when causal role, structure interaction, or erosion/transport/deposition/connectivity changes.
+- Reconcile facts across the whole input. Do not invent a step or evidence to reach a desired count. An empty batch may return an empty segments list.
+- Keep event and process concise. Preserve named torrents, rivers, structures, and causal meaning.
+- For full rerun corrections, start with review_issues and previous_answer; reuse supported previous work while
+  re-extracting all supplied source. Return only steps evidenced by this batch, using its supplied chunk IDs.
+  Correction chunk IDs are permanent source IDs; review_chunk_references resolves local IDs in reviewer feedback.
+
+Representative Schnannerbach example:
+Input chunks: c1="Previous landslide deposits were remobilized into the main channel. Feeder channels delivered large sediment volumes into Schnannerbach.";
+c2="The sediment retention basin filled and was overtopped by debris flow.";
+c3="The bridge near the Rosanna River became blocked by debris. Backflow from the Rosanna River caused upstream flooding."
+Output: {"segments":[
+ {"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Previous landslide deposits remobilized into the main channel","evidence":[{"chunk_id":"c1","quote":"Previous landslide deposits were remobilized into the main channel"}]},
+ {"segment":2,"causal_order":2,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Feeder channels delivered large sediment volumes into Schnannerbach","evidence":[{"chunk_id":"c1","quote":"Feeder channels delivered large sediment volumes into Schnannerbach"}]},
+ {"segment":3,"causal_order":3,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Sediment retention basin filled and was overtopped by debris flow","evidence":[{"chunk_id":"c2","quote":"The sediment retention basin filled and was overtopped by debris flow"}]},
+ {"segment":4,"causal_order":4,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Bridge near Rosanna River became blocked by debris","evidence":[{"chunk_id":"c3","quote":"The bridge near the Rosanna River became blocked by debris"}]},
+ {"segment":5,"causal_order":5,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Backflow from Rosanna River caused upstream flooding","evidence":[{"chunk_id":"c3","quote":"Backflow from the Rosanna River caused upstream flooding"}]}
+]}
+These observations do not establish links between segments. Segment 5 preserves the stated backflow-to-flooding cause
+within one step; the input does not say that the bridge blockage caused the backflow.
+
+Chronology/branch example:
+Input: c1="At noon, a rockfall damaged a road. Later, heavy rain mobilized sediment in an unrelated tributary.
+That mobilized sediment filled the tributary's retention basin. Separately, coastal waves eroded a bank."
+Steps in list order (each with a quote of its corresponding input sentence):
+1 road damage, predecessors=[]; 2 tributary sediment mobilization, predecessors=[];
+3 tributary basin filling, predecessors=[2]; 4 coastal bank erosion, predecessors=[].
+"Later" establishes timing, not a 1->2 cause. Only the explicit "That mobilized sediment" supports 2->3.
+This example illustrates link validity only; unrelated events are excluded from a main-event summary.
+
+Produce a concise causal account of the main hazard event. A segment represents a major physical process or functional
+stage at the level an expert would use in an event-summary table, not an individual observation.
+Include event-specific preconditions, triggers, material mobilization, movement, deposition, channel changes,
+infrastructure impacts, and post-event redistribution when supported. Exclude historical events, general background,
+emergency notifications, evacuation accounts, and unrelated neighboring events. Include background only when the
+source explicitly connects it to the main event's development. Preserve relevant independent branches.
+Merge observations describing the same process and causal role across the report, including summaries and captions.
+Keep measurements, named locations, and individual damaged objects within the relevant stage with supporting citations;
+they do not independently justify more segments. Separate stages when merging would hide a meaningful difference in
+mechanism, causal role, or outcome: for example erosion versus deposition, or a small precursor flow versus the main flow.
+Multiple discharge waves may share a stage unless different causes or consequences matter to understanding the event.
+For a single event of moderate complexity, approximately 8-12 segments is guidance for the complete report, not a quota
+for each batch or a hard limit. Do not invent stages or merge distinct mechanisms to reach a target count.
+Order by supported chronology and causal relationships, not first appearance in the report. Do not invent causal links.
+Before returning, remove repeated stages and check that every segment adds a distinct part of the event's explanation.
+
+========================================================================
+
+5. REPORT-LEVEL CONSOLIDATION
+Source: multi_hazard_pipeline/agents/segment_agent.py
+
+Consolidate the supplied batch-level causal steps into one coherent report-level chain. Return JSON only with segments and excluded_observations.
+For each output segment, provide segment, causal_order, predecessor_segment_ids, event, process, and source_segment_ids.
+Use contiguous segment and causal_order values beginning at 1. Account for every input source segment exactly once:
+assign its ID to one output segment's source_segment_ids, or to excluded_observations as
+{"source_segment_id":1,"reason":"Specific reason this observation is outside the main event summary"}.
+Return excluded_observations=[] when nothing is excluded. Merge repeated observations of the same major stage;
+do not exclude useful evidence merely to reach a target count. Preserve distinct major stages,
+order evidenced causes before effects, and use only earlier output segment numbers as predecessors when the supplied
+evidence supports a direct causal link. Chronology, adjacency, or shared location alone does not establish causation;
+preserve uncertainty, independent branches, and empty predecessor lists, including for later steps. Write event and process in English.
+Do not return evidence quotes: Python attaches every original citation from the listed source_segment_ids.
+Do not invent facts or source IDs.
+When review_issues and previous_answer are supplied, preserve all feedback while reassessing the complete chain's
+consequences and predecessor links. Current batch_segments are the source steps to consolidate; their IDs may differ
+from previous_answer. Categorization feedback informs causal meaning; Python reassesses labels afterward.
+
+Produce a concise causal account of the main hazard event. A segment represents a major physical process or functional
+stage at the level an expert would use in an event-summary table, not an individual observation.
+Include event-specific preconditions, triggers, material mobilization, movement, deposition, channel changes,
+infrastructure impacts, and post-event redistribution when supported. Exclude historical events, general background,
+emergency notifications, evacuation accounts, and unrelated neighboring events. Include background only when the
+source explicitly connects it to the main event's development. Preserve relevant independent branches.
+Merge observations describing the same process and causal role across the report, including summaries and captions.
+Keep measurements, named locations, and individual damaged objects within the relevant stage with supporting citations;
+they do not independently justify more segments. Separate stages when merging would hide a meaningful difference in
+mechanism, causal role, or outcome: for example erosion versus deposition, or a small precursor flow versus the main flow.
+Multiple discharge waves may share a stage unless different causes or consequences matter to understanding the event.
+For a single event of moderate complexity, approximately 8-12 segments is guidance for the complete report, not a quota
+for each batch or a hard limit. Do not invent stages or merge distinct mechanisms to reach a target count.
+Order by supported chronology and causal relationships, not first appearance in the report. Do not invent causal links.
+Before returning, remove repeated stages and check that every segment adds a distinct part of the event's explanation.
+
+========================================================================
+
+6. CITATION VERIFICATION (conditional)
+Source: multi_hazard_pipeline/agents/segment_agent.py
+
+Check one nonliteral evidence citation against short fragments of the original extracted source text. The cited wording
+may join text from two adjacent pages or from noncontinuous table cells. Decide whether the selected fragments together
+actually support the segment's process in meaning, not merely share keywords. Do not infer facts absent from the source.
+If supported, return supported=true and the smallest set of 1-3 fragment_ids that substantiate it. Fragments may come
+from the cited page and its immediate neighbors. If not clearly supported, return supported=false and fragment_ids=[].
+Return only JSON with supported, fragment_ids, and a concise reason. Python will cite the exact selected source fragments.
+
+========================================================================
+
+7. CATEGORIZATION / CLASSIFICATION
+Source: multi_hazard_pipeline/agents/classification_agent.py; config.py
+
+Categorize supplied segments without rewriting them. Return one complete JSON object only, with no Markdown fences,
+commentary, or revisions after it. Each row must have exactly these keys:
+{"rows":[{"segment":1,"generalized_category":"...","interaction_type":"...",
+"sediment_transport_phase":"...","classification_rationale":["..."]}]}.
+Copy the integer "segment" from the supplied step; the field is "segment", never "segment_id".
+For ordinary calls return exactly one row for EVERY requested_segment_ids entry, in supplied order.
+Never stop after the first segment or merge several segments into one classification.
+Correction calls follow requested_segment_ids and the correction rules below. For each result,
+return only its segment ID, generalized_category, interaction_type, sediment_transport_phase, and a short
+classification_rationale list. Python retains the original causal order, event, process, and evidence unchanged.
+
+Exact controlled values:
+- generalized_category: ['Unstable pre-event conditions', 'Triggering Event', 'Material Mobilization', 'Favourable Topography', 'Natural dam failure', 'Sediment Surge', 'Post-event redistribution', 'Impact on permanent or temporary infrastructure', 'Positive Impact on permanent or temporary infrastructure', 'Changes in geomorphology', 'Negative Impact on permanent or temporary infrastructure', 'Alteration of channel dynamics', 'unknown', 'not applicable']
+- interaction_type: ['Process-process', 'Process-topography', 'Process-structure', 'Feedback', 'unknown', 'not applicable']
+- sediment_transport_phase: ['Erosion', 'Transportation', 'Deposition', 'Dysconnectivity', 'unknown', 'not applicable']
+
+Taxonomy decision rules:
+- T1 Evidence: classify the evidenced step, preserving uncertainty. For each field, use "unknown" when it applies but
+  evidence cannot select a label; use "not applicable" when it does not apply. Choose a specific label when supported.
+  Explain the choice briefly with evidence.
+- T2 Infrastructure: classify the effect on sediment connectivity, not social benefit, harm, or physical damage alone.
+  Use "Positive Impact on permanent or temporary infrastructure" for evidenced increased sediment passage, release,
+  propagation, or dispersion; "Negative Impact on permanent or temporary infrastructure" for evidenced decreased
+  sediment passage through retention, trapping, or obstruction; "Impact on permanent or temporary infrastructure"
+  when a structure is affected or involved but connectivity direction is unclear. Failure/overtopping is positive only
+  with evidence of increased passage; damage alone proves neither direction. Road closure blocks traffic, not necessarily sediment.
+- T3 Causal role: "Unstable pre-event conditions" describes antecedent instability or stored material;
+  "Triggering Event" the active initiator; "Material Mobilization" active sediment recruitment;
+  "Favourable Topography" terrain/channel form amplifying movement; "Natural dam failure" failure of a natural blockage;
+  "Sediment Surge" a sediment-heavy downstream surge; "Post-event redistribution" delayed or secondary redistribution;
+  "Changes in geomorphology" explicit channel/landform reshaping; "Alteration of channel dynamics" changed flow behavior.
+- T4 Interaction precedence: Feedback for reverse/backwater/upstream response; otherwise Process-structure when a
+  structure controls or is affected by the process; otherwise Process-process when a natural process supplies, triggers,
+  or alters another; otherwise Process-topography when terrain controls the process. Apply T1 if none is evidenced.
+- T5 Transport phase: Dysconnectivity for evidenced sediment retention/blockage/interruption; otherwise Erosion for
+  removal/recruitment; otherwise Deposition for settling/accumulation; otherwise Transportation for evidenced sediment
+  movement. Traffic interruption or infrastructure damage alone is not Dysconnectivity. Pre-event conditions or triggers
+  without sediment movement or retention/blockage use "not applicable"; an applicable but undetermined phase uses "unknown".
+  Determine phase separately from infrastructure direction; do not infer one field solely from another label.
+
+Give a short evidence-based classification_rationale, identifying the relevant rule and supporting quote or mechanism.
+Treat review_issues and correction_instruction as claims to reassess against the supplied evidence and these rules,
+not authoritative replacement labels. Accept a proposed replacement only if supported; otherwise retain or select the supported label,
+including an uncertainty label where appropriate, and briefly explain why. Match quoted evidence rather than chunk IDs
+from another request. Neither a reviewer proposal nor a structure's protective purpose establishes connectivity direction.
+Never paraphrase or otherwise change a source segment.
+For structured review_issues, use previous_answer and the entire supplied chain to reassess consequences.
+Return rows for all requested_segment_ids and any OTHER affected segments whose labels or rationale need correction.
+Omit unchanged, unrequested classifications; Python retains them. Correction evidence IDs are permanent source IDs.
+
+========================================================================
+
+8. INDEPENDENT SEMANTIC REVIEW
+Source: multi_hazard_pipeline/agents/review_agent.py; config.py; segment_agent.py
+
+Evaluate the complete candidate report as an ordered set of causal steps, allowing independent branches and roots. Inspect the full report and supplied source chunks,
+not isolated rows. Return JSON only with status pass or revision_required, summary, issues, and all five checks.
+The checks object must contain exactly these Boolean keys on every response:
+{"causal_chain_coherent":true,"evidence_verified":true,"segments_complete":true,
+"segments_unique":true,"categories_valid":true}. Set relevant values false when revision is required; never omit a key.
+Every issue MUST contain all five fields, including segment_ids as an array of integer segment numbers:
+{"stage":"categorization","segment_ids":[1],"code":"wrong_category",
+"message":"Segment 1: generalized_category=Negative Impact on permanent or temporary infrastructure; c1 'Blocks partially destroyed the nets'; T2 requires evidenced decreased sediment passage, which this quote does not establish.",
+"suggested_action":"Reassess connectivity direction under T2; use a replacement only if supported."}
+For a whole-report issue with no affected segment, use "segment_ids":[], never omit it or use null.
+The stage value must be exactly one of "translation", "segmentation", or "categorization".
+
+Assess semantic facts that deterministic code cannot decide reliably:
+- Where translation_applied is true, does translated_text faithfully preserve its original text, including terminology, names, quantities, negation,
+  uncertainty, and causality? Use issue stage translation and fail evidence_verified for translation defects.
+- Where translation_applied is false, translated_text intentionally retains the original language. Minority-language
+  passthrough under skip_translation is not a translation defect; never request translation merely for it.
+  Missing or incorrect interpretation of these passages in the English event/process fields is a segmentation issue.
+  Legacy artifacts without flags retain the contract that translated_text is an English translation.
+- When no separate translated_text is supplied, interpret text directly in its original language, including minority-language passages; identical translations are omitted.
+- Chunk IDs and document IDs are request-local. Respect document boundaries, filenames, and locations when interpreting the chain and citations.
+- Are every segment's event and process written in English?
+- Is each predecessor link supported by source evidence of a direct causal relationship? Chronological order,
+  adjacent descriptions, and shared locations alone do not prove causation. Independent branches and empty predecessors are valid.
+- Are important major stages of the main event missing? Completeness does not require every observation or background fact.
+- Would an expert merge rows because they describe the same major stage? Flag the affected IDs with a targeted merge instruction
+  and fail segments_unique. Repeated measurements, locations, damaged objects, summaries, and captions do not justify separate rows.
+- Are historical events, unrelated background, or emergency/evacuation accounts included without a relevant physical process?
+  Flag these as segmentation scope issues. Do not restore intentionally excluded context merely for completeness.
+- Do not fail a report solely because its segment count falls outside the suggested range.
+- Is every claim supported by its evidence in meaning (citation IDs and quote occurrence are already code-checked)?
+- Is every segment categorized exactly once, and do taxonomy precedence/disambiguation rules fit its role in sediment connectivity?
+- Is the complete report internally consistent?
+
+Issue stage must be translation, segmentation, or categorization. Use stable snake_case issue codes, affected segment IDs (or [] for a
+whole-report omission), a concise message, and an actionable correction instruction. Segmentation issues include missing,
+duplicate, fragmented, unsupported, or misordered causal steps. Categorization issues apply only when the segment chain is
+sound but a controlled label is semantically wrong. Pass only with no issues and every check true. Do not act as a human reviewer.
+
+Independently determine which labels the source supports using the shared rules below before comparing the candidate;
+the classifier's rationale is a claim to verify, not evidence or authority. For every categorization disagreement, the
+message must identify the segment, field/current label, source chunk ID and short quote, and rule ID with an explanation
+of what the current label violates. If the problem is absence of evidence for a direction, say what the source establishes
+and what is missing. Suggest a replacement only when supported; otherwise request evidence-based reassessment using T1/T2.
+Do not flag a supported uncertainty label merely for being nonspecific. Keep summary/messages concise; omit deliberation.
+
+Produce a concise causal account of the main hazard event. A segment represents a major physical process or functional
+stage at the level an expert would use in an event-summary table, not an individual observation.
+Include event-specific preconditions, triggers, material mobilization, movement, deposition, channel changes,
+infrastructure impacts, and post-event redistribution when supported. Exclude historical events, general background,
+emergency notifications, evacuation accounts, and unrelated neighboring events. Include background only when the
+source explicitly connects it to the main event's development. Preserve relevant independent branches.
+Merge observations describing the same process and causal role across the report, including summaries and captions.
+Keep measurements, named locations, and individual damaged objects within the relevant stage with supporting citations;
+they do not independently justify more segments. Separate stages when merging would hide a meaningful difference in
+mechanism, causal role, or outcome: for example erosion versus deposition, or a small precursor flow versus the main flow.
+Multiple discharge waves may share a stage unless different causes or consequences matter to understanding the event.
+For a single event of moderate complexity, approximately 8-12 segments is guidance for the complete report, not a quota
+for each batch or a hard limit. Do not invent stages or merge distinct mechanisms to reach a target count.
+Order by supported chronology and causal relationships, not first appearance in the report. Do not invent causal links.
+Before returning, remove repeated stages and check that every segment adds a distinct part of the event's explanation.
+
+Taxonomy decision rules:
+- T1 Evidence: classify the evidenced step, preserving uncertainty. For each field, use "unknown" when it applies but
+  evidence cannot select a label; use "not applicable" when it does not apply. Choose a specific label when supported.
+  Explain the choice briefly with evidence.
+- T2 Infrastructure: classify the effect on sediment connectivity, not social benefit, harm, or physical damage alone.
+  Use "Positive Impact on permanent or temporary infrastructure" for evidenced increased sediment passage, release,
+  propagation, or dispersion; "Negative Impact on permanent or temporary infrastructure" for evidenced decreased
+  sediment passage through retention, trapping, or obstruction; "Impact on permanent or temporary infrastructure"
+  when a structure is affected or involved but connectivity direction is unclear. Failure/overtopping is positive only
+  with evidence of increased passage; damage alone proves neither direction. Road closure blocks traffic, not necessarily sediment.
+- T3 Causal role: "Unstable pre-event conditions" describes antecedent instability or stored material;
+  "Triggering Event" the active initiator; "Material Mobilization" active sediment recruitment;
+  "Favourable Topography" terrain/channel form amplifying movement; "Natural dam failure" failure of a natural blockage;
+  "Sediment Surge" a sediment-heavy downstream surge; "Post-event redistribution" delayed or secondary redistribution;
+  "Changes in geomorphology" explicit channel/landform reshaping; "Alteration of channel dynamics" changed flow behavior.
+- T4 Interaction precedence: Feedback for reverse/backwater/upstream response; otherwise Process-structure when a
+  structure controls or is affected by the process; otherwise Process-process when a natural process supplies, triggers,
+  or alters another; otherwise Process-topography when terrain controls the process. Apply T1 if none is evidenced.
+- T5 Transport phase: Dysconnectivity for evidenced sediment retention/blockage/interruption; otherwise Erosion for
+  removal/recruitment; otherwise Deposition for settling/accumulation; otherwise Transportation for evidenced sediment
+  movement. Traffic interruption or infrastructure damage alone is not Dysconnectivity. Pre-event conditions or triggers
+  without sediment movement or retention/blockage use "not applicable"; an applicable but undetermined phase uses "unknown".
+  Determine phase separately from infrastructure direction; do not infer one field solely from another label.
+
+========================================================================
+
+9. SEGMENTATION CORRECTION ADDENDUM
+Source: multi_hazard_pipeline/agents/segment_agent.py
+
+Appended to the segmentation prompt for chain revisions. Translation and categorization corrections reuse their prompts with review_issues, previous_answer, and correction_instruction inputs.
+
+Start with the defects in review_issues and revise previous_answer's existing report chain. Return the COMPLETE revised
+chain, retaining valid steps and citations. Follow each affected step's consequences across the whole chain, including
+other affected segments and their predecessor links. You may add, remove, merge, reorder, or change steps anywhere
+when the supplied source supports it. Keep unchanged step IDs; use new unique positive IDs for added steps.
+Segmentation and categorization feedback may coexist: preserve the meaning needed to reassess labels, but return
+only segments; Python categorizes the result separately. Copy evidence from original text, preserving source provenance.
+Correction chunk IDs are permanent source IDs shared with previous_answer. Do not treat feedback as authority over evidence.
+
+========================================================================
+
+10. COMMON JSON RULE (appended to every system prompt)
+Source: multi_hazard_pipeline/llm.py
+
+Inside JSON strings, escape double quotes as \", backslashes as \\, and line breaks as \n. Never emit literal control characters. Use plain punctuation in generated descriptions where possible; preserve required labels and evidence content.
+
+========================================================================
+
+11. FAILED-ANSWER REPAIR (user-message template)
+Source: multi_hazard_pipeline/llm.py
+
+The previous answer failed {repair['kind']}: {repair['error']}
+Correct the failed answer using the original task and evidence above. Return only a complete JSON object matching the required schema.
+
+========================================================================
+
+12. DYNAMIC INPUTS AND OTHER STAGES
+Source: multi_hazard_pipeline/
+
+Translation also receives terminology mappings from Translation resources/multi_hazard_keywords.csv. Each model call receives task-specific JSON data: source chunks, candidate segments, requested IDs, source fragments, or correction context. The exact payload expressions are included below for reference. Response schemas are defined in schemas.py. Deterministic validation, correction routing, human review, and export have no additional LLM system prompts.
+
+========================================================================
+
+INPUT / SCHEMA CALL REFERENCE: splitter.py
+Source: multi_hazard_pipeline/splitter.py
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import tempfile
+import unicodedata
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from pypdf import PdfReader, PdfWriter
+
+from .config import DEFAULT_CONFIG, PipelineConfig
+from .core import normalize_text, resolve_path, restore_source_quote
+from .errors import PipelineError
+from .llm import ChatClient
+from .schemas import event_separation_response_schema
+
+
+EVENT_SEPARATION_PROMPT = """Identify starts of independent event reports in a PDF collection.
+An event report is a self-contained report about one occurrence or one connected multi-hazard occurrence.
+Multiple hazards do not automatically mean multiple events. Flooding, erosion, sediment transport,
+debris flow, landslide, and damage may belong to one causal event. Geographic headings such as Tirol,
+Steiermark, or Kärnten are containers, not event reports. Internal subsections such as Beschreibung des
+Einzugsgebietes, Ereignisbeschreibung, Schäden, Sofortmaßnahmen, Fotodokumentation, and
+Niederschlagsanalyse belong to the surrounding event report. TOC occurrences are never sufficient
+evidence of an actual start: every valid start needs a heading_quote from the actual content page.
+Overview statistics, meteorological summaries, introductions, conclusions, tables of figures, and
+bibliographies are not event reports. Return verified starts, not page ranges, and identify the first page
+after the event-report collection when present. Never invent titles, events, dates, locations, or
+boundaries. Return status review_required for ambiguous structure, including two reports starting on one
+physical page. Page numbers are physical 1-based PDF pages.
+
+The input encodes outline rows as [hierarchy_level, physical_page, bookmark_title] and page_context rows
+as [physical_page, extracted_text]. Return exactly one JSON object with these keys and no others:
+{"status":"pass","events":[{"title":"visible heading title","start_page":1,
+"heading_quote":"exact visible heading","confidence":0.99}],"collection_end":{"page":10,
+"heading_quote":"exact first post-collection heading"},"warnings":[]}. collection_end may be null.
+Do not return a bare array. Do not put the collection-end heading in events."""
+
+TOC_HEADING = re.compile(
+    r"^(?:inhalt|inhaltsverzeichnis|table\s+of\s+contents|contents|sommaire|indice)$",
+    re.IGNORECASE,
+)
+TOC_ENTRY = re.compile(r"^\s*(.+?)\s*(?:\.{2,}|\s{2,})\s*(\d+)\s*$")
+NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*\.?|[IVXLCDM]+\.?)\s*", re.IGNORECASE)
+MIN_CONFIDENCE = 0.8
+
+
+@dataclass(frozen=True)
+class EventRange:
+    sequence: int
+    title: str
+    start_page: int
+    end_page: int
+
+
+def extract_outline(reader: PdfReader) -> list[dict[str, Any]]:
+    """Return the PDF outline as nested nodes with physical 1-based destinations."""
+
+    def walk(items: list[Any]) -> list[dict[str, Any]]:
+        nodes: list[dict[str, Any]] = []
+        for item in items:
+            if isinstance(item, list):
+                if nodes:
+                    nodes[-1]["children"] = walk(item)
+                continue
+            try:
+                page = reader.get_destination_page_number(item) + 1
+            except Exception:
+                page = None
+            nodes.append(
+                {
+                    "title": str(getattr(item, "title", item)),
+                    "page": page,
+                    "children": [],
+                }
+            )
+        return nodes
+
+    return walk(list(reader.outline))
+
+
+def flatten_outline(nodes: list[dict[str, Any]], level: int = 0) -> list[dict[str, Any]]:
+    flattened: list[dict[str, Any]] = []
+    for node in nodes:
+        flattened.append({"level": level, "title": node["title"], "page": node["page"]})
+        flattened.extend(flatten_outline(node["children"], level + 1))
+    return flattened
+
+
+def parse_toc(page_texts: list[str]) -> tuple[set[int], list[dict[str, Any]]]:
+    toc_pages: set[int] = set()
+    candidates: list[dict[str, Any]] = []
+    active = False
+    for page, text in enumerate(page_texts, start=1):
+        lines = [normalize_text(line) for line in text.splitlines() if normalize_text(line)]
+        has_heading = any(TOC_HEADING.fullmatch(line) for line in lines)
+        if has_heading:
+            active = True
+        entries = []
+        if active:
+            for line in lines:
+                match = TOC_ENTRY.match(line)
+                if match:
+                    entries.append(
+                        {
+                            "title": normalize_text(match.group(1)),
+                            "printed_page": int(match.group(2)),
+                            "toc_page": page,
+                        }
+                    )
+        dotted_lines = sum("..." in line for line in lines)
+        if active and (has_heading or entries or dotted_lines >= 2):
+            toc_pages.add(page)
+            candidates.extend(entries)
+        elif active:
+            active = False
+    return toc_pages, candidates
+
+
+def _heading_key(text: str) -> str:
+    return normalize_text(NUMBERING.sub("", text)).casefold().strip(" .:-")
+
+
+def resolve_toc_candidates(
+    candidates: list[dict[str, Any]], page_texts: list[str], toc_pages: set[int]
+) -> list[dict[str, Any]]:
+    resolved = []
+    page_lines = {
+        page: {_heading_key(line) for line in text.splitlines() if _heading_key(line)}
+        for page, text in enumerate(page_texts, start=1)
+        if page not in toc_pages
+    }
+    for candidate in candidates:
+        key = _heading_key(candidate["title"])
+        matches = [page for page, lines in page_lines.items() if key and key in lines]
+        resolved.append(candidate | {"physical_page": matches[0] if len(matches) == 1 else None})
+    return resolved
+
+
+def _quote_on_page(quote: str, text: str) -> bool:
+    return restore_source_quote(text, quote) is not None
+
+
+def validate_separation(
+    payload: Any,
+    page_texts: list[str],
+    toc_pages: set[int] | None = None,
+    *,
+    allow_empty: bool = False,
+) -> None:
+    required = {"status", "events", "collection_end", "warnings"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise ValueError("separation response fields are invalid")
+    if payload.get("status") not in {"pass", "review_required"}:
+        raise ValueError("separation status must be pass or review_required")
+    if not isinstance(payload.get("events"), list) or not isinstance(payload.get("warnings"), list):
+        raise ValueError("separation response must include events and warnings lists")
+    if any(not isinstance(warning, str) for warning in payload["warnings"]):
+        raise ValueError("separation warnings must be strings")
+    if payload["status"] == "review_required":
+        return
+    if not payload["events"] and not allow_empty:
+        raise ValueError("no event-report starts were verified")
+    seen: set[int] = set()
+    for event in payload["events"]:
+        if not isinstance(event, dict) or set(event) != {
+            "title", "start_page", "heading_quote", "confidence"
+        }:
+            raise ValueError("event must be an object")
+        page = event.get("start_page")
+        if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= len(page_texts):
+            raise ValueError(f"event start page is outside the PDF: {page!r}")
+        if page in seen:
+            raise ValueError(f"multiple event reports start on physical page {page}")
+        if toc_pages and page in toc_pages:
+            raise ValueError(f"TOC page {page} cannot be an event-report start")
+        seen.add(page)
+        title = event.get("title", "")
+        if not normalize_text(title):
+            raise ValueError("event title is required")
+        if not _quote_on_page(title, page_texts[page - 1]):
+            raise ValueError(f"event title does not occur on physical page {page}")
+        confidence = event.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError("event confidence must be between 0 and 1")
+        if confidence < MIN_CONFIDENCE:
+            raise ValueError(f"event start on page {page} is not reliable")
+        quote = event.get("heading_quote", "")
+        if not normalize_text(quote) or not _quote_on_page(quote, page_texts[page - 1]):
+            raise ValueError(f"heading quote does not occur on physical page {page}")
+        event["heading_quote"] = restore_source_quote(page_texts[page - 1], quote)
+    boundary = payload.get("collection_end")
+    if boundary is not None:
+        if (
+            not isinstance(boundary, dict)
+            or set(boundary) != {"page", "heading_quote"}
+            or isinstance(boundary.get("page"), bool)
+            or not isinstance(boundary.get("page"), int)
+        ):
+            raise ValueError("collection_end must contain a physical page")
+        page = boundary["page"]
+        if not 1 <= page <= len(page_texts):
+            raise ValueError("collection_end page is outside the PDF")
+        quote = boundary.get("heading_quote", "")
+        if not normalize_text(quote) or not _quote_on_page(quote, page_texts[page - 1]):
+            raise ValueError(f"collection-end quote does not occur on physical page {page}")
+        boundary["heading_quote"] = restore_source_quote(page_texts[page - 1], quote)
+
+
+def construct_ranges(
+    events: list[dict[str, Any]], collection_end: dict[str, Any] | None, page_count: int
+) -> list[EventRange]:
+    starts = sorted(events, key=lambda event: event["start_page"])
+    if len({event["start_page"] for event in starts}) != len(starts):
+        raise PipelineError("multiple event reports start on the same physical page; review required")
+    final_end = collection_end["page"] - 1 if collection_end else page_count
+    ranges = [
+        EventRange(
+            sequence=index,
+            title=event["title"],
+            start_page=event["start_page"],
+            end_page=(starts[index]["start_page"] - 1 if index < len(starts) else final_end),
+        )
+        for index, event in enumerate(starts, start=1)
+    ]
+    validate_ranges(ranges, page_count)
+    return ranges
+
+
+def validate_ranges(ranges: Iterable[EventRange], page_count: int) -> None:
+    previous_end = 0
+    seen: set[tuple[int, int]] = set()
+    for event in ranges:
+        if not 1 <= event.start_page <= event.end_page <= page_count:
+            raise PipelineError(
+                f"invalid event range {event.start_page}-{event.end_page} for {page_count}-page PDF"
+            )
+        if event.start_page <= previous_end:
+            raise PipelineError("event ranges must be ordered and non-overlapping")
+        key = (event.start_page, event.end_page)
+        if key in seen:
+            raise PipelineError("duplicate event range")
+        seen.add(key)
+        previous_end = event.end_page
+
+
+def safe_event_filename(event: EventRange, page_count: int) -> str:
+    ascii_title = unicodedata.normalize("NFKD", event.title).encode("ascii", "ignore").decode()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_title.casefold()).strip("-") or "event"
+    width = max(3, len(str(page_count)))
+    return (
+        f"{event.sequence:02d}-{slug}_pages-"
+        f"{event.start_page:0{width}d}-{event.end_page:0{width}d}.pdf"
+    )
+
+
+def _candidate_payload(
+    outline: list[dict[str, Any]],
+    toc: list[dict[str, Any]],
+    page_texts: list[str],
+    max_chars: int,
+) -> dict[str, Any]:
+    flat = flatten_outline(outline)
+    structural = {
+        node["page"]
+        for node in flat
+        if node["page"] is not None
+        and (node["level"] == 0 or any(
+            parent["page"] == node["page"] and parent["children"]
+            for parent in _walk_nodes(outline)
+        ))
+    }
+    structural.update(item["physical_page"] for item in toc if item.get("physical_page"))
+    pages = sorted(structural)
+    compact_outline = [
+        [item["level"], item["page"], item["title"][:120]] for item in flat
+    ]
+    context_pages: set[int] = set()
+    for page in pages:
+        for context_page in range(max(1, page - 1), min(len(page_texts), page + 1) + 1):
+            context_pages.add(context_page)
+    base = {
+        "outline": compact_outline,
+        "toc_candidates": toc,
+        "candidate_pages": pages,
+        "page_context": [],
+        "instruction": "Verify actual event starts and the first post-collection section.",
+    }
+    candidate_chars = 240
+    neighbor_chars = 48
+    while True:
+        base["page_context"] = [
+            [
+                page,
+                page_texts[page - 1][
+                    : candidate_chars if page in structural else neighbor_chars
+                ],
+            ]
+            for page in sorted(context_pages)
+        ]
+        if len(json.dumps(base, ensure_ascii=False)) <= max_chars or candidate_chars == 1:
+            break
+        candidate_chars = max(1, candidate_chars * 4 // 5)
+        neighbor_chars = max(1, neighbor_chars * 4 // 5)
+    return base
+
+
+def _walk_nodes(nodes: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
+    for node in nodes:
+        yield node
+        yield from _walk_nodes(node["children"])
+
+
+def _page_batches(page_texts: list[str], max_chars: int) -> Iterable[list[dict[str, Any]]]:
+    start = 0
+    while start < len(page_texts):
+        batch: list[dict[str, Any]] = []
+        used = 0
+        index = start
+        while index < len(page_texts):
+            text = page_texts[index]
+            remaining = max_chars - used
+            if batch and len(text) > remaining:
+                break
+            clipped = text[: max(1, remaining)]
+            batch.append({"page": index + 1, "text": clipped})
+            used += len(clipped)
+            index += 1
+            if used >= max_chars:
+                break
+        yield batch
+        if index >= len(page_texts):
+            break
+        start = max(start + 1, index - 1)
+
+
+def _ask(client: ChatClient, payload: dict[str, Any], page_texts: list[str], toc_pages: set[int], *, allow_empty: bool) -> dict[str, Any]:
+    return client.complete_json(
+        system_prompt=EVENT_SEPARATION_PROMPT,
+        user_payload=payload,
+        response_schema=event_separation_response_schema(),
+        validate=lambda response: validate_separation(
+            response, page_texts, toc_pages, allow_empty=allow_empty
+        )
+
+========================================================================
+
+INPUT / SCHEMA CALL REFERENCE: agents/translation_agent.py
+Source: multi_hazard_pipeline/agents/translation_agent.py
+
+from __future__ import annotations
+
+import csv
+from copy import deepcopy
+from pathlib import Path
+from typing import Any
+
+from ..config import DEFAULT_CONFIG, PipelineConfig
+from ..core import normalize_text
+from ..errors import PipelineError
+from ..language import analyze_language
+from ..llm import ChatClient
+from ..payloads import affected_segment_ids, correction_payload, resolve_chunk_ids, source_payload
+from ..schemas import SOURCE_LANGUAGE_LABELS, SUPPORTED_SOURCE_LANGUAGES, translation_response_schema
+from .segment_agent import batch_chunks
+
+
+GLOSSARY_PATH = (
+    Path(__file__).resolve().parents[2] / "Translation resources" / "multi_hazard_keywords.csv"
+)
+
+TRANSLATION_PROMPT = """
+Translate every supplied report chunk into English and return JSON only as
+{"translations":[{"chunk_id":"...","source_language":"English|German|French|Italian|Mixed","translated_text":"..."}]}.
+
+Rules:
+- Return exactly one result per chunk, in the supplied order, using the exact request-local chunk_id. Respect document boundaries and supplied locations.
+- Use the local language hints. Resolve Unknown text only within English, German, French, or Italian; unsupported or still unresolved substantive text is an explicit error, never an invented translation.
+- Translate mixed chunks as a whole, retaining their existing English passages unchanged except whitespace normalization. Label them Mixed. English text must pass through unchanged except whitespace normalization; do not semantically rewrite it.
+- Translate faithfully. Do not summarize, classify, omit, combine, explain, or invent information.
+- Preserve named places, torrents, rivers, structures, numbers, units, dates, directions, negation, uncertainty, and causal relationships.
+- For corrections, start with review_issues and the previous_answer. Repair the supplied affected passages, using the
+  complete previous chain to understand consequences. Retain valid wording within those passages. Correction chunk IDs
+  are permanent source IDs shared with previous_answer; Python retains translations outside the supplied chunks.
+- Use the supplied terminology mappings as contextual guidance, not mechanical string replacement. Select the term matching the source meaning and preserve distinctions, including German Murgang (debris flow) versus Hangmure (slope debris flow).
+""".strip()
+
+
+def load_translation_glossary(path: Path = GLOSSARY_PATH) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != list(SUPPORTED_SOURCE_LANGUAGES):
+            raise PipelineError("translation glossary must contain English, German, French, and Italian columns")
+        rows = [{language: row.get(language, "") for language in SUPPORTED_SOURCE_LANGUAGES} for row in reader]
+    if len(rows) != 151:
+        raise PipelineError(f"translation glossary must contain 151 mappings, found {len(rows)}")
+    return rows
+
+
+def validate_translation_results(payload: Any, source: dict[str, Any], *, allow_unknown: bool = False) -> None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("translations"), list):
+        raise ValueError("translation payload must be an object with a translations list")
+    expected = [normalize_text(chunk["chunk_id"]) for chunk in source.get("chunks", [])]
+    results = payload["translations"]
+    if any(not isinstance(item, dict) for item in results):
+        raise ValueError("translation result must be an object")
+    returned = [normalize_text(item.get("chunk_id", "")) for item in results]
+    if len(returned) != len(set(returned)):
+        raise ValueError("translation contains duplicate chunk IDs")
+    unknown = set(returned) - set(expected)
+    if unknown:
+        raise ValueError(f"translation contains unknown chunk IDs: {sorted(unknown)}")
+    missing = set(expected) - set(returned)
+    if missing:
+        raise ValueError(f"translation is missing chunk IDs: {sorted(missing)}")
+    if returned != expected:
+        raise ValueError("translation chunk IDs are reordered")
+    for result, chunk in zip(results, source["chunks"], strict=True):
+        language = result.get("source_language")
+        translated_text = normalize_text(result.get("translated_text", ""))
+        if language not in SOURCE_LANGUAGE_LABELS or (language == "Unknown" and not allow_unknown):
+            raise ValueError(f"unsupported source language: {language!r}")
+        if not translated_text:
+            raise ValueError(f"translation for chunk {chunk['chunk_id']} is empty")
+        if language == "English" and translated_text != normalize_text(chunk["text"]):
+            raise ValueError(f"English chunk {chunk['chunk_id']} was rewritten")
+
+
+def validate_translated_source(translated: dict[str, Any], source: dict[str, Any]) -> None:
+    expected_chunks = source.get("chunks", [])
+    actual_chunks = translated.get("chunks") if isinstance(translated, dict) else None
+    if not isinstance(actual_chunks, list):
+        raise ValueError("translated source must contain a chunks list")
+    validate_translation_results(
+        {
+            "translations": [
+                {
+                    "chunk_id": chunk.get("chunk_id"),
+                    "source_language": chunk.get("source_language"),
+                    "translated_text": chunk.get("translated_text"),
+                }
+                for chunk in actual_chunks
+            ]
+        },
+        source,
+        allow_unknown=True,
+    )
+    for original, chunk in zip(expected_chunks, actual_chunks, strict=True):
+        if set(chunk) != set(original) | {"source_language", "translated_text"}:
+            raise ValueError(f"translated chunk {original['chunk_id']} metadata fields changed")
+        for key, value in original.items():
+            if chunk.get(key) != value:
+                raise ValueError(f"translated chunk {original['chunk_id']} changed {key}")
+        analysis = translated.get("language_analysis")
+        if analysis:
+            detail = analysis["chunks"][original["chunk_id"]]
+            if analysis["decision"] == "skip_translation" and detail["translation_applied"]:
+                raise ValueError("mainly English report must not contain applied translations")
+            if not detail["translation_applied"] and chunk["translated_text"] != normalize_text(original["text"]):
+                raise ValueError(f"passthrough chunk {original['chunk_id']} was rewritten")
+            if detail["translation_applied"] and chunk["source_language"] == "Unknown":
+                raise ValueError(f"translated chunk {original['chunk_id']} has unresolved language")
+
+
+def project_glossary(glossary: list[dict[str, str]], languages: set[str]) -> list[dict[str, str]]:
+    rows = []
+    for row in glossary:
+        sources = {name: row[name] for name in SUPPORTED_SOURCE_LANGUAGES[1:]
+                   if name in languages and row[name].strip()}
+        if sources:
+            rows.append({"English": row["English"], **sources})
+    return rows
+
+
+def translation_agent(
+    client: ChatClient,
+    source: dict[str, Any],
+    correction_instruction: str | None = None,
+    *,
+    config: PipelineConfig = DEFAULT_CONFIG,
+    previous_analysis: dict[str, Any] | None = None,
+    previous: dict[str, Any] | None = None,
+    previous_answer: dict[str, Any] | None = None,
+    review_issues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    correction = correction_payload(previous or source, previous_answer or {}, review_issues) if review_issues else {}
+    affected_chunks = None
+    if previous is not None and review_issues and previous_answer:
+        try:
+            validate_translated_source(previous, source)
+        except ValueError:
+            pass  # Invalid prior translations require a full rerun.
+        else:
+            affected = affected_segment_ids([issue for issue in review_issues if issue["stage"] == "translation"], previous_answer)
+            rows = [row for row in previous_answer.get("rows", []) if affected and row["segment"] in affected]
+            source_by_id = {chunk["chunk_id"]: normalize_text(chunk["text"]).casefold() for chunk in source["chunks"]}
+            citations = [citation for row in rows for citation in row["evidence"]]
+            if citations and all(row["evidence"] for row in rows) and all(
+                                 normalize_text(citation["quote"]) and citation["chunk_id"] in source_by_id and normalize_text(citation["quote"]).casefold()
+                                 in source_by_id[citation["chunk_id"]] for citation in citations):
+                affected_chunks = {citation["chunk_id"] for citation in citations}
+    analysis = analyze_language(source, config, previous_analysis)
+    translated = deepcopy(source)
+    translated["language_analysis"] = analysis
+    pending = []
+    previous_by_id = {chunk["chunk_id"]: chunk for chunk in (previous or {}).get("chunks", [])}
+    for original, chunk in zip(source["chunks"], translated["chunks"], strict=True):
+        detail = analysis["chunks"][chunk["chunk_id"]]
+        chunk["source_language"] = detail["source_language"]
+        chunk["translated_text"] = normalize_text(chunk["text"])
+        if (analysis["decision"] == "translate" and detail["total_alphabetic_count"]
+                and detail["source_language"] != "English"):
+            if affected_chunks is not None and chunk["chunk_id"] not in affected_chunks:
+                prior = previous_by_id[chunk["chunk_id"]]
+                chunk["source_language"] = prior["source_language"]
+                chunk["translated_text"] = prior["translated_text"]
+                detail["translation_applied"] = (previous.get("language_analysis", {}).get("chunks", {})
+                                                 .get(chunk["chunk_id"], {}).get("translation_applied", True))
+                continue
+            pending.append(original)
+    glossary = load_translation_glossary() if pending else []
+    by_id = {chunk["chunk_id"]: chunk for chunk in translated["chunks"]}
+    for batch in batch_chunks(pending, 5000):
+        projected, references = source_payload(batch, permanent_ids=bool(review_issues))
+        for item, chunk in zip(projected["chunks"], batch, strict=True):
+            detail = analysis["chunks"][chunk["chunk_id"]]
+            item.update(source_language=detail["source_language"], languages=detail["languages"])
+
+        def validate(payload: Any) -> None:
+            payload = resolve_chunk_ids(payload, references, translations=True)
+            validate_translation_results(payload, {"chunks": batch})
+            for result in payload["translations"]:
+                hint = analysis["chunks"][normalize_text(result["chunk_id"])]["source_language"]
+                if hint != "Unknown" and result["source_language"] != hint:
+                    raise ValueError(f"translation changed detected language for {result['chunk_id']}")
+
+        languages = set()
+        for chunk in batch:
+            detail = analysis["chunks"][chunk["chunk_id"]]
+            languages.update(detail["languages"])
+            if detail["unresolved_count"]:
+                languages.update(SUPPORTED_SOURCE_LANGUAGES[1:])
+
+        payload = client.complete_json(
+            system_prompt=TRANSLATION_PROMPT,
+            user_payload={
+                **projected,
+                **correction,
+                "terminology_mappings": project_glossary(glossary, languages),
+                "correction_instruction": normalize_text(correction_instruction or "") or None,
+            },
+            validate=validate,
+            response_schema=translation_response_schema(),
+        )
+
+========================================================================
+
+INPUT / SCHEMA CALL REFERENCE: agents/segment_agent.py
+Source: multi_hazard_pipeline/agents/segment_agent.py
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+from ..config import PipelineConfig
+from ..core import normalize_text
+from ..errors import PipelineError
+from ..language import language_prompt_context
+from ..llm import ChatClient
+from ..payloads import affected_segment_ids, correction_payload, resolve_chunk_ids, segment_payload, source_payload, text_payload
+from ..schemas import (
+    CitationQuoteMismatch,
+    citation_verification_response_schema,
+    consolidation_response_schema,
+    segment_response_schema,
+    validate_segment_chain,
+)
+
+
+EVENT_STAGE_RULES = """
+Produce a concise causal account of the main hazard event. A segment represents a major physical process or functional
+stage at the level an expert would use in an event-summary table, not an individual observation.
+Include event-specific preconditions, triggers, material mobilization, movement, deposition, channel changes,
+infrastructure impacts, and post-event redistribution when supported. Exclude historical events, general background,
+emergency notifications, evacuation accounts, and unrelated neighboring events. Include background only when the
+source explicitly connects it to the main event's development. Preserve relevant independent branches.
+Merge observations describing the same process and causal role across the report, including summaries and captions.
+Keep measurements, named locations, and individual damaged objects within the relevant stage with supporting citations;
+they do not independently justify more segments. Separate stages when merging would hide a meaningful difference in
+mechanism, causal role, or outcome: for example erosion versus deposition, or a small precursor flow versus the main flow.
+Multiple discharge waves may share a stage unless different causes or consequences matter to understanding the event.
+For a single event of moderate complexity, approximately 8-12 segments is guidance for the complete report, not a quota
+for each batch or a hard limit. Do not invent stages or merge distinct mechanisms to reach a target count.
+Order by supported chronology and causal relationships, not first appearance in the report. Do not invent causal links.
+Before returning, remove repeated stages and check that every segment adds a distinct part of the event's explanation.
+""".strip()
+
+
+SEGMENTATION_PROMPT = """
+Extract evidence for major stages of the main hazard event from the supplied source, allowing relevant independent branches.
+Final grouping occurs across the whole document; within this batch, merge repeated observations of the same stage. Return JSON only as
+{"segments":[{"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"...","process":"...","evidence":[{"chunk_id":"...","quote":"..."}]}]}.
+
+Rules:
+- A segment is one distinct causal-process step: what happened, why it happened, or what it caused. It is not every sentence, number, observation, or location.
+- Order causes before their evidenced effects. Use contiguous causal_order values beginning at 1; this is a list order, not proof of causation. segment is a positive integer ID; Python preserves IDs for unchanged steps across revisions.
+- predecessor_segment_ids may be empty, including for later steps; otherwise cite only real, earlier segment numbers whose direct causal relationship is supported by source evidence. Chronological order, adjacent sentences, or a shared location alone do not prove causation. Preserve uncertain causal claims as uncertain rather than adding established links. Independent branches and multiple roots are valid.
+- Every segment needs at least one evidence citation. Use only supplied chunk IDs and copy an exact quote or a whitespace-normalized substring from that chunk.
+- Use translated_text for semantic interpretation. When translation_applied is false, this is original-language passthrough: interpret all minority-language passages directly, including German, French, Italian, and mixed text. Do not omit them. event and process must always be written in English.
+- When no separate translated_text is supplied, interpret text directly in its original language; identical translations are omitted. Chunk and document IDs are request-local. Respect document boundaries, filenames, and source locations.
+- Evidence quote must remain in the original source language: copy it only from the chunk's text field, never from translated_text.
+- PDF extraction may contain replacement characters (�) or broken words. Quote a short contiguous fragment exactly as supplied in text; do not repair its spelling or accents in the quote.
+- Merge repeated descriptions and quantities for the same causal step and retain every useful citation. Merge a cause with its immediate consequence only when the reference abstraction treats them as one statement.
+- Separate materially different causal steps, especially when causal role, structure interaction, or erosion/transport/deposition/connectivity changes.
+- Reconcile facts across the whole input. Do not invent a step or evidence to reach a desired count. An empty batch may return an empty segments list.
+- Keep event and process concise. Preserve named torrents, rivers, structures, and causal meaning.
+- For full rerun corrections, start with review_issues and previous_answer; reuse supported previous work while
+  re-extracting all supplied source. Return only steps evidenced by this batch, using its supplied chunk IDs.
+  Correction chunk IDs are permanent source IDs; review_chunk_references resolves local IDs in reviewer feedback.
+
+Representative Schnannerbach example:
+Input chunks: c1="Previous landslide deposits were remobilized into the main channel. Feeder channels delivered large sediment volumes into Schnannerbach.";
+c2="The sediment retention basin filled and was overtopped by debris flow.";
+c3="The bridge near the Rosanna River became blocked by debris. Backflow from the Rosanna River caused upstream flooding."
+Output: {"segments":[
+ {"segment":1,"causal_order":1,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Previous landslide deposits remobilized into the main channel","evidence":[{"chunk_id":"c1","quote":"Previous landslide deposits were remobilized into the main channel"}]},
+ {"segment":2,"causal_order":2,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Feeder channels delivered large sediment volumes into Schnannerbach","evidence":[{"chunk_id":"c1","quote":"Feeder channels delivered large sediment volumes into Schnannerbach"}]},
+ {"segment":3,"causal_order":3,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Sediment retention basin filled and was overtopped by debris flow","evidence":[{"chunk_id":"c2","quote":"The sediment retention basin filled and was overtopped by debris flow"}]},
+ {"segment":4,"causal_order":4,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Bridge near Rosanna River became blocked by debris","evidence":[{"chunk_id":"c3","quote":"The bridge near the Rosanna River became blocked by debris"}]},
+ {"segment":5,"causal_order":5,"predecessor_segment_ids":[],"event":"Schnannerbach","process":"Backflow from Rosanna River caused upstream flooding","evidence":[{"chunk_id":"c3","quote":"Backflow from the Rosanna River caused upstream flooding"}]}
+]}
+These observations do not establish links between segments. Segment 5 preserves the stated backflow-to-flooding cause
+within one step; the input does not say that the bridge blockage caused the backflow.
+
+Chronology/branch example:
+Input: c1="At noon, a rockfall damaged a road. Later, heavy rain mobilized sediment in an unrelated tributary.
+That mobilized sediment filled the tributary's retention basin. Separately, coastal waves eroded a bank."
+Steps in list order (each with a quote of its corresponding input sentence):
+1 road damage, predecessors=[]; 2 tributary sediment mobilization, predecessors=[];
+3 tributary basin filling, predecessors=[2]; 4 coastal bank erosion, predecessors=[].
+"Later" establishes timing, not a 1->2 cause. Only the explicit "That mobilized sediment" supports 2->3.
+This example illustrates link validity only; unrelated events are excluded from a main-event summary.
+""".strip() + "\n\n" + EVENT_STAGE_RULES
+
+
+CONSOLIDATION_PROMPT = """
+Consolidate the supplied batch-level causal steps into one coherent report-level chain. Return JSON only with segments and excluded_observations.
+For each output segment, provide segment, causal_order, predecessor_segment_ids, event, process, and source_segment_ids.
+Use contiguous segment and causal_order values beginning at 1. Account for every input source segment exactly once:
+assign its ID to one output segment's source_segment_ids, or to excluded_observations as
+{"source_segment_id":1,"reason":"Specific reason this observation is outside the main event summary"}.
+Return excluded_observations=[] when nothing is excluded. Merge repeated observations of the same major stage;
+do not exclude useful evidence merely to reach a target count. Preserve distinct major stages,
+order evidenced causes before effects, and use only earlier output segment numbers as predecessors when the supplied
+evidence supports a direct causal link. Chronology, adjacency, or shared location alone does not establish causation;
+preserve uncertainty, independent branches, and empty predecessor lists, including for later steps. Write event and process in English.
+Do not return evidence quotes: Python attaches every original citation from the listed source_segment_ids.
+Do not invent facts or source IDs.
+When review_issues and previous_answer are supplied, preserve all feedback while reassessing the complete chain's
+consequences and predecessor links. Current batch_segments are the source steps to consolidate; their IDs may differ
+from previous_answer. Categorization feedback informs causal meaning; Python reassesses labels afterward.
+""".strip() + "\n\n" + EVENT_STAGE_RULES
+
+
+CITATION_VERIFICATION_PROMPT = """
+Check one nonliteral evidence citation against short fragments of the original extracted source text. The cited wording
+may join text from two adjacent pages or from noncontinuous table cells. Decide whether the selected fragments together
+actually support the segment's process in meaning, not merely share keywords. Do not infer facts absent from the source.
+If supported, return supported=true and the smallest set of 1-3 fragment_ids that substantiate it. Fragments may come
+from the cited page and its immediate neighbors. If not clearly supported, return supported=false and fragment_ids=[].
+Return only JSON with supported, fragment_ids, and a concise reason. Python will cite the exact selected source fragments.
+""".strip()
+
+
+SEGMENT_CORRECTION_PROMPT = """
+Start with the defects in review_issues and revise previous_answer's existing report chain. Return the COMPLETE revised
+chain, retaining valid steps and citations. Follow each affected step's consequences across the whole chain, including
+other affected segments and their predecessor links. You may add, remove, merge, reorder, or change steps anywhere
+when the supplied source supports it. Keep unchanged step IDs; use new unique positive IDs for added steps.
+Segmentation and categorization feedback may coexist: preserve the meaning needed to reassess labels, but return
+only segments; Python categorizes the result separately. Copy evidence from original text, preserving source provenance.
+Correction chunk IDs are permanent source IDs shared with previous_answer. Do not treat feedback as authority over evidence.
+""".strip()
+
+
+def batch_chunks(chunks: list[dict[str, Any]], max_chars: int) -> list[list[dict[str, Any]]]:
+    """Budget the text fields actually sent; the client caps the full JSON request."""
+    if max_chars < 1:
+        raise PipelineError("batch character limit must be positive")
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_size = 0
+    for chunk in chunks:
+        size = sum(len(text) for text in text_payload(chunk).values())
+        if size > max_chars:
+            raise PipelineError(
+                f"chunk {chunk['chunk_id']} contains {size} text characters, exceeding the "
+                f"{max_chars} batch limit; re-extract with smaller source chunks or increase the limit"
+            )
+        if current and current_size + size > max_chars:
+            batches.append(current)
+            current, current_size = [], 0
+        current.append(chunk)
+        current_size += size
+    if current:
+        batches.append(current)
+    return batches
+
+
+def select_semantic_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compatibility hook: every source chunk is now semantically eligible."""
+    return chunks
+
+
+def _normalized_citation(citation: dict[str, Any]) -> dict[str, str]:
+    return {"chunk_id": normalize_text(citation["chunk_id"]), "quote": normalize_text(citation["quote"])}
+
+
+def _reindex_chain(items: list[dict[str, Any]], start: int = 1) -> list[dict[str, Any]]:
+    ordered = sorted(items, key=lambda item: item["causal_order"])
+    mapping = {item["segment"]: start + index for index, item in enumerate(ordered)}
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(ordered):
+        result.append(
+            {
+                "segment": start + index,
+                "causal_order": start + index,
+                "predecessor_segment_ids": [mapping[value] for value in item["predecessor_segment_ids"]],
+                "event": normalize_text(item["event"]),
+                "process": normalize_text(item["process"]),
+                "evidence": [_normalized_citation(citation) for citation in item["evidence"]],
+            }
+        )
+    return result
+
+
+def consolidate_exact_duplicates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge exact normalized event/process duplicates without losing citations."""
+    if not items:
+        return []
+    kept: list[dict[str, Any]] = []
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    old_to_kept: dict[int, int] = {}
+    for item in sorted(deepcopy(items), key=lambda value: value["causal_order"]):
+        key = (normalize_text(item["event"]).casefold(), normalize_text(item["process"]).casefold())
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = item
+            kept.append(item)
+            old_to_kept[item["segment"]] = item["segment"]
+            continue
+        old_to_kept[item["segment"]] = existing["segment"]
+        citations = {(value["chunk_id"], value["quote"]) for value in existing["evidence"]}
+        for citation in item["evidence"]:
+            normalized = _normalized_citation(citation)
+            key_citation = (normalized["chunk_id"], normalized["quote"])
+            if key_citation not in citations:
+                existing["evidence"].append(normalized)
+                citations.add(key_citation)
+    for item in kept:
+        item["predecessor_segment_ids"] = list(
+            dict.fromkeys(
+                old_to_kept.get(value, value)
+                for value in item["predecessor_segment_ids"]
+                if old_to_kept.get(value, value) != item["segment"]
+            )
+        )
+    return _reindex_chain(kept)
+
+
+def _restore_consolidated_evidence(
+    payload: Any, preliminary: list[dict[str, Any]], source: dict[str, Any]
+) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+        raise ValueError("consolidation must return a segments list")
+    by_id = {item["segment"]: item for item in preliminary}
+    used: list[int] = []
+    result: list[dict[str, Any]] = []
+    for row in payload["segments"]:
+        if not isinstance(row, dict) or not isinstance(row.get("source_segment_ids"), list) or not row["source_segment_ids"]:
+            raise ValueError("each consolidated segment needs source_segment_ids")
+        citations: list[dict[str, str]] = []
+        for source_id in row["source_segment_ids"]:
+            if type(source_id) is not int or source_id not in by_id:
+                raise ValueError(f"consolidation cites unknown source segment {source_id}")
+            used.append(source_id)
+            for citation in by_id[source_id]["evidence"]:
+                if citation not in citations:
+                    citations.append(deepcopy(citation))
+        result.append({key: row[key] for key in ("segment", "causal_order", "predecessor_segment_ids", "event", "process")} | {"evidence": citations})
+    excluded = payload.get("excluded_observations")
+    if not isinstance(excluded, list):
+        raise ValueError("consolidation needs an excluded_observations list")
+    for observation in excluded:
+        if not isinstance(observation, dict):
+            raise ValueError("excluded observation must be an object")
+        source_id = observation.get("source_segment_id")
+        if type(source_id) is not int or source_id not in by_id:
+            raise ValueError(f"exclusion cites unknown source segment {source_id}")
+        reason = observation.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("excluded observation needs a nonempty reason")
+        used.append(source_id)
+    missing = set(by_id) - set(used)
+    if missing:
+        detail = "; ".join(f"{source_id}: {by_id[source_id]['evidence'][0]['quote']!r}" for source_id in sorted(missing))
+        raise ValueError(f"consolidation dropped source segment(s) and evidence citation(s): {detail}")
+    if len(used) != len(set(used)):
+        raise ValueError("consolidation used a source segment more than once")
+    validate_segment_chain({"segments": result}, source)
+    return result
+
+
+def _verify_nonliteral_citation(
+    client: ChatClient,
+    item: dict[str, Any],
+    mismatch: CitationQuoteMismatch,
+    chunks: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    source_index = next(index for index, chunk in enumerate(chunks) if normalize_text(chunk["chunk_id"]) == mismatch.chunk_id)
+    cited = chunks[source_index]
+    source_document = (cited.get("document_id", cited.get("doc_id")), cited.get("filename", cited.get("file")))
+    fragments: list[dict[str, Any]] = []
+    for index in range(max(0, source_index - 1), min(len(chunks), source_index + 2)):
+        chunk = chunks[index]
+        if (chunk.get("document_id", chunk.get("doc_id")), chunk.get("filename", chunk.get("file"))) != source_document:
+            continue
+        content = normalize_text(chunk["text"])
+        for start in range(0, len(content), 250):
+            fragment = content[start:start + 350]
+            if fragment and (len(fragment) >= 40 or start == 0):
+                fragments.append({
+                    "fragment_id": f"f{len(fragments) + 1}",
+                    "chunk_id": chunk["chunk_id"],
+                    "text": fragment,
+                    "cited_chunk": chunk["chunk_id"] == mismatch.chunk_id,
+                    **{key: chunk[key] for key in ("page", "paragraph", "table", "table_path", "row", "cell", "char_start", "char_end")
+                       if key in chunk},
+                })
+    by_id = {fragment["fragment_id"]: fragment for fragment in fragments}
+
+    def validate(response: Any) -> None:
+        if not isinstance(response, dict) or type(response.get("supported")) is not bool:
+            raise ValueError("citation verification needs a supported boolean")
+        if not isinstance(response.get("reason"), str):
+            raise ValueError("citation verification needs a reason")
+        ids = response.get("fragment_ids")
+        if not isinstance(ids, list) or any(not isinstance(value, str) or value not in by_id for value in ids):
+            raise ValueError("citation verification returned unknown fragment IDs")
+        if len(ids) != len(set(ids)) or (response["supported"] and not 1 <= len(ids) <= 3):
+            raise ValueError("citation verification needs 1-3 unique supporting fragments")
+        if not response["supported"] and ids:
+            raise ValueError("unsupported citations must not select fragments")
+
+    response = client.complete_json(
+        system_prompt=CITATION_VERIFICATION_PROMPT,
+        user_payload={
+            "event": item["event"], "process": item["process"],
+            "proposed_quote": mismatch.quote,
+            "filename": chunks[source_index].get("filename", chunks[source_index].get("file", "")),
+            "fragments": [{key: value for key, value in fragment.items() if key != "chunk_id"} for fragment in fragments],
+        },
+        validate=validate,
+        response_schema=citation_verification_response_schema(),
+        timeout_seconds=120,
+        total_timeout_seconds=300,
+    )
+    if not response["supported"]:
+        raise ValueError(f"segment {mismatch.segment} citation is not supported by the cited or adjacent source pages")
+    return [
+        {"chunk_id": by_id[value]["chunk_id"], "quote": by_id[value]["text"]}
+        for value in response["fragment_ids"]
+    ]
+
+
+def stabilize_segment_ids(
+    revised: dict[str, Any], previous: dict[str, Any]
+) -> dict[str, Any]:
+    """Retain IDs for unchanged causal steps while allowing order to change."""
+    result = deepcopy(revised)
+    previous_by_key = {
+        (normalize_text(item["event"]).casefold(), normalize_text(item["process"]).casefold()): int(
+            item["segment"]
+        )
+        for item in previous["segments"]
+    }
+    next_id = max((int(item["segment"]) for item in previous["segments"]), default=0) + 1
+    assigned: set[int] = set()
+    mapping: dict[int, int] = {}
+    for item in sorted(result["segments"], key=lambda value: value["causal_order"]):
+        key = (normalize_text(item["event"]).casefold(), normalize_text(item["process"]).casefold())
+        stable_id = previous_by_key.get(key)
+        if stable_id is None or stable_id in assigned:
+            stable_id = next_id
+            next_id += 1
+        mapping[int(item["segment"])] = stable_id
+        assigned.add(stable_id)
+    for item in result["segments"]:
+        original_id = int(item["segment"])
+        item["segment"] = mapping[original_id]
+        item["predecessor_segment_ids"] = [mapping[int(value)] for value in item["predecessor_segment_ids"]]
+    return result
+
+
+def collect_segments_from_chunks(
+    client: ChatClient,
+    *,
+    doc_id: str,
+    chunks: list[dict[str, Any]],
+    segments: list[dict[str, Any]],
+    seen: set[tuple[str, str]] | None = None,
+    max_chars: int,
+    starting_batch_index: int = 1,
+    correction_instruction: str | None = None,
+    language_context: dict[str, Any] | None = None,
+    correction: dict[str, Any] | None = None,
+    revise_chain: bool = False,
+) -> int:
+    batch_index = starting_batch_index
+    for batch in batch_chunks(chunks, max_chars):
+        projected, references = source_payload(batch, language_context, permanent_ids=bool(correction))
+        validated_segments: list[dict[str, Any]] = []
+
+        def validate(payload: Any) -> None:
+            payload = resolve_chunk_ids(payload, references)
+            batch_ids = {normalize_text(chunk["chunk_id"]) for chunk in batch}
+            for item in payload["segments"]:
+                for citation in item["evidence"]:
+                    if normalize_text(citation["chunk_id"]) not in batch_ids:
+                        raise ValueError(f"segment {item['segment']} cites unknown chunk {citation['chunk_id']}")
+            for _ in range(sum(len(item["evidence"]) for item in payload["segments"]) + 1):
+                try:
+                    validate_segment_chain(payload, {"chunks": chunks})
+                    validated_segments[:] = payload["segments"]
+                    return
+                except CitationQuoteMismatch as mismatch:
+                    item = next(value for value in payload["segments"] if value["segment"] == mismatch.segment)
+                    index = next(
+                        index for index, citation in enumerate(item["evidence"])
+                        if normalize_text(citation["chunk_id"]) == mismatch.chunk_id
+                        and normalize_text(citation["quote"]) == mismatch.quote
+                    )
+                    item["evidence"][index:index + 1] = _verify_nonliteral_citation(client, item, mismatch, chunks)
+            raise ValueError("citation verification did not resolve all nonliteral quotes")
+
+        client.complete_json(
+            system_prompt=SEGMENTATION_PROMPT + ("\n\n" + SEGMENT_CORRECTION_PROMPT if revise_chain else ""),
+            user_payload={
+                **projected,
+                **(correction or {}),
+                "correction_instruction": normalize_text(correction_instruction or "") or None,
+            },
+            validate=validate,
+            response_schema=segment_response_schema(),
+        )
+        reindexed = _reindex_chain(validated_segments, len(segments) + 1)
+        segments.extend(reindexed)
+        batch_index += 1
+    return batch_index
+
+
+def segment_agent(
+    client: ChatClient,
+    source: dict[str, Any],
+    config: PipelineConfig,
+    correction_instruction: str | None = None,
+    *,
+    previous_answer: dict[str, Any] | None = None,
+    review_issues: list[dict[str, Any]] | None = None,
+    previous_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    chunks = select_semantic_chunks(source["chunks"])
+    correction = correction_payload(previous_source or source, previous_answer or {}, review_issues) if review_issues else None
+    scoped = previous_answer and affected_segment_ids(
+        [issue for issue in review_issues or [] if issue["stage"] in {"translation", "segmentation"}], previous_answer,
+    ) is not None
+    if scoped:
+        revised: list[dict[str, Any]] = []
+        try:
+            collect_segments_from_chunks(
+                client, doc_id=source["doc_id"], chunks=chunks, segments=revised,
+                max_chars=max(config.batch_max_chars, sum(sum(len(text) for text in text_payload(chunk).values()) for chunk in chunks)),
+                correction_instruction=correction_instruction, correction=correction, revise_chain=True,
+                language_context=language_prompt_context(source),
+            )
+        except PipelineError as exc:
+            if "exceeding max_request_chars=" not in str(exc):
+                raise
+            # The complete repair request is too large; use the normal batched full rerun.
+        else:
+            if not revised:
+                raise PipelineError("segment correction produced no causal-process segments")
+            return {"doc_id": source["doc_id"], "status": "pass", "segments": revised}
+    max_chars = config.batch_max_chars
+    batches = batch_chunks(chunks, max_chars)
+    preliminary: list[dict[str, Any]] = []
+    collect_segments_from_chunks(
+        client,
+        doc_id=source["doc_id"],
+        chunks=chunks,
+        segments=preliminary,
+        max_chars=max_chars,
+        correction_instruction=correction_instruction,
+        language_context=language_prompt_context(source),
+        correction=correction,
+    )
+    preliminary = consolidate_exact_duplicates(preliminary)
+    validate_segment_chain({"segments": preliminary}, source)
+
+    segments = preliminary
+    audit: dict[str, Any] = {}
+    if len(batches) > 1:
+        def validate_consolidated(payload: Any) -> None:
+            _restore_consolidated_evidence(payload, preliminary, source)
+
+        consolidated = client.complete_json(
+            system_prompt=CONSOLIDATION_PROMPT,
+            user_payload={
+                "batch_segments": segment_payload(preliminary, references={citation["chunk_id"]: citation["chunk_id"]
+                    for item in preliminary for citation in item["evidence"]} if correction else None),
+                **(correction or {}),
+                "correction_instruction": normalize_text(correction_instruction or "") or None,
+            },
+            validate=validate_consolidated,
+            response_schema=consolidation_response_schema(),
+        )
+
+========================================================================
+
+INPUT / SCHEMA CALL REFERENCE: agents/classification_agent.py
+Source: multi_hazard_pipeline/agents/classification_agent.py
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any, Iterable
+
+from ..config import TAXONOMY_DECISION_RULES, PipelineConfig
+from ..core import normalize_text
+from ..errors import PipelineError
+from ..llm import ChatClient
+from ..payloads import correction_payload, segment_payload, source_payload
+from ..schemas import (
+    IMMUTABLE_SEGMENT_FIELDS,
+    canonicalize_row_labels,
+    classification_response_schema,
+    validate_classification_payload,
+)
+
+
+def _classification_prompt(config: PipelineConfig) -> str:
+    labels = config.controlled_labels()
+    return f"""
+Categorize supplied segments without rewriting them. Return one complete JSON object only, with no Markdown fences,
+commentary, or revisions after it. Each row must have exactly these keys:
+{{"rows":[{{"segment":1,"generalized_category":"...","interaction_type":"...",
+"sediment_transport_phase":"...","classification_rationale":["..."]}}]}}.
+Copy the integer "segment" from the supplied step; the field is "segment", never "segment_id".
+For ordinary calls return exactly one row for EVERY requested_segment_ids entry, in supplied order.
+Never stop after the first segment or merge several segments into one classification.
+Correction calls follow requested_segment_ids and the correction rules below. For each result,
+return only its segment ID, generalized_category, interaction_type, sediment_transport_phase, and a short
+classification_rationale list. Python retains the original causal order, event, process, and evidence unchanged.
+
+Exact controlled values:
+- generalized_category: {labels['generalized_category']}
+- interaction_type: {labels['interaction_type']}
+- sediment_transport_phase: {labels['sediment_transport_phase']}
+
+{TAXONOMY_DECISION_RULES}
+
+Give a short evidence-based classification_rationale, identifying the relevant rule and supporting quote or mechanism.
+Treat review_issues and correction_instruction as claims to reassess against the supplied evidence and these rules,
+not authoritative replacement labels. Accept a proposed replacement only if supported; otherwise retain or select the supported label,
+including an uncertainty label where appropriate, and briefly explain why. Match quoted evidence rather than chunk IDs
+from another request. Neither a reviewer proposal nor a structure's protective purpose establishes connectivity direction.
+Never paraphrase or otherwise change a source segment.
+For structured review_issues, use previous_answer and the entire supplied chain to reassess consequences.
+Return rows for all requested_segment_ids and any OTHER affected segments whose labels or rationale need correction.
+Omit unchanged, unrequested classifications; Python retains them. Correction evidence IDs are permanent source IDs.
+""".strip()
+
+
+def validate_classification_against_segments(
+    payload: Any,
+    segments: dict[str, Any],
+    config: PipelineConfig,
+    expected_segment_ids: Iterable[int] | None = None,
+) -> None:
+    """Validate exact coverage, controlled labels, and immutable segment data."""
+    validate_classification_payload(payload, config)
+    source_by_id = {item["segment"]: item for item in segments.get("segments", [])}
+    expected = set(source_by_id) if expected_segment_ids is None else set(expected_segment_ids)
+    returned = [row["segment"] for row in payload["rows"]]
+    if len(returned) != len(set(returned)):
+        raise ValueError("classification contains a segment more than once")
+    if set(returned) != expected:
+        missing = sorted(expected - set(returned))
+        unknown = sorted(set(returned) - expected)
+        raise ValueError(f"classification coverage mismatch; missing={missing}, unknown={unknown}")
+    for row in payload["rows"]:
+        source = source_by_id.get(row["segment"])
+        if source is None:
+            raise ValueError(f"classification returned unknown segment {row['segment']}")
+        for field in IMMUTABLE_SEGMENT_FIELDS:
+            if field in row and row[field] != source.get(field):
+                raise ValueError(f"classification rewrote segment {row['segment']} field {field}")
+
+
+def _normalize_classified_row(row: dict[str, Any], source: dict[str, Any], config: PipelineConfig) -> dict[str, Any]:
+    canonicalize_row_labels(row, config)
+    result = {field: deepcopy(source[field]) for field in IMMUTABLE_SEGMENT_FIELDS}
+    result.update(
+        {
+            "generalized_category": row["generalized_category"],
+            "interaction_type": row["interaction_type"],
+            "sediment_transport_phase": row["sediment_transport_phase"],
+            "classification_rationale": [normalize_text(item) for item in row["classification_rationale"]],
+        }
+    )
+    return result
+
+
+def classification_agent(
+    client: ChatClient,
+    segments: dict[str, Any],
+    config: PipelineConfig,
+    segment_ids: Iterable[int] | None = None,
+    existing: dict[str, Any] | list[dict[str, Any]] | None = None,
+    correction_instruction: str | None = None,
+    *,
+    review_issues: list[dict[str, Any]] | None = None,
+    source: dict[str, Any] | None = None,
+    previous_source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source_by_id = {item["segment"]: item for item in segments.get("segments", [])}
+    if len(source_by_id) != len(segments.get("segments", [])) or not source_by_id:
+        raise PipelineError("classification requires a non-empty segment chain with unique IDs")
+    requested = list(source_by_id) if segment_ids is None else list(segment_ids)
+    if len(requested) != len(set(requested)):
+        raise PipelineError("affected classification segment IDs must be unique")
+    unknown = set(requested) - set(source_by_id)
+    if unknown:
+        raise PipelineError(f"cannot classify unknown segments: {sorted(unknown)}")
+    existing_rows = existing.get("rows", []) if isinstance(existing, dict) else (existing or [])
+    if set(requested) != set(source_by_id) and not existing_rows:
+        raise PipelineError("targeted categorization requires existing classifications for unaffected segments")
+
+    requested_set = set(requested)
+    requested_segments = [item for item in segments["segments"] if item["segment"] in requested_set]
+
+    def validate(payload: Any) -> None:
+        # Validate row shape before deriving correction coverage, so repair gets the actual field error.
+        validate_classification_payload(payload, config)
+        returned = {row["segment"] for row in payload["rows"]}
+        if review_issues and not requested_set <= returned:
+            raise ValueError(f"classification omitted requested segments: {sorted(requested_set - returned)}")
+        validate_classification_against_segments(payload, segments, config, returned if review_issues else requested_set)
+
+    correction = correction_payload(previous_source or source or {"chunks": []}, {"rows": existing_rows}, review_issues) if review_issues else {}
+    references = {citation["chunk_id"]: citation["chunk_id"] for item in segments["segments"] for citation in item["evidence"]}
+    response_schema = classification_response_schema(config)
+    rows_schema = response_schema["schema"]["properties"]["rows"]
+    rows_schema.update(minItems=len(requested), maxItems=len(source_by_id) if review_issues else len(requested))
+    rows_schema["items"]["properties"]["segment"]["enum"] = list(source_by_id) if review_issues else requested
+
+    payload = client.complete_json(
+        system_prompt=_classification_prompt(config),
+        user_payload={
+            "segments": segment_payload(segments["segments"] if review_issues else requested_segments,
+                                        references=references if review_issues else None),
+            "requested_segment_ids": requested,
+            **correction,
+            **({"source": source_payload(source["chunks"], permanent_ids=True)[0] if source else None} if review_issues else {}),
+            "correction_instruction": normalize_text(correction_instruction or "") or None,
+        },
+        validate=validate,
+        response_schema=response_schema,
+    )
+
+========================================================================
+
+INPUT / SCHEMA CALL REFERENCE: agents/review_agent.py
+Source: multi_hazard_pipeline/agents/review_agent.py
+
+from __future__ import annotations
+
+from typing import Any
+
+from .segment_agent import EVENT_STAGE_RULES
+from ..config import TAXONOMY_DECISION_RULES, PipelineConfig
+from ..core import normalize_text
+from ..language import language_prompt_context
+from ..llm import ChatClient
+from ..payloads import segment_payload, source_payload
+from ..schemas import review_response_schema, validate_review_payload
+
+
+CHECK_NAMES = (
+    "causal_chain_coherent",
+    "evidence_verified",
+    "segments_complete",
+    "segments_unique",
+    "categories_valid",
+)
+
+
+def _issue(stage: str, segment_ids: list[int], code: str, message: str, action: str) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "segment_ids": segment_ids,
+        "code": code,
+        "message": message,
+        "suggested_action": action,
+    }
+
+
+def deterministic_candidate_evaluation(
+    candidate: dict[str, Any], source: dict[str, Any], config: PipelineConfig
+) -> tuple[dict[str, bool], list[dict[str, Any]]]:
+    """Return deterministic whole-candidate checks and machine-readable issues."""
+    checks = {name: True for name in CHECK_NAMES}
+    issues: list[dict[str, Any]] = []
+    rows = candidate.get("rows")
+    if not isinstance(rows, list) or not rows:
+        checks.update({name: False for name in CHECK_NAMES})
+        return checks, [_issue("segmentation", [], "empty_candidate", "Candidate has no segments.", "Regenerate segmentation.")]
+
+    ids = [row.get("segment") for row in rows]
+    integer_ids = [value for value in ids if isinstance(value, int)]
+    if (
+        len(integer_ids) != len(ids)
+        or any(value < 1 for value in integer_ids)
+        or len(integer_ids) != len(set(integer_ids))
+    ):
+        checks["segments_unique"] = False
+        checks["segments_complete"] = False
+        issues.append(_issue("segmentation", integer_ids, "duplicate_or_invalid_segment_id", "Segment IDs are invalid or duplicated.", "Regenerate a uniquely numbered segment chain."))
+
+    orders = [row.get("causal_order") for row in rows]
+    if orders != list(range(1, len(rows) + 1)):
+        checks["causal_chain_coherent"] = False
+        checks["segments_complete"] = False
+        issues.append(_issue("segmentation", integer_ids, "invalid_causal_order", "Causal order must be contiguous and list-ordered.", "Reorder the causal chain without changing stable segment IDs."))
+
+    order_by_id = {
+        row["segment"]: row.get("causal_order")
+        for row in rows
+        if isinstance(row.get("segment"), int) and isinstance(row.get("causal_order"), int)
+    }
+    for row in rows:
+        segment_id = row.get("segment")
+        predecessors = row.get("predecessor_segment_ids")
+        if not isinstance(predecessors, list) or any(
+            not isinstance(value, int)
+            or value not in order_by_id
+            or order_by_id[value] >= row.get("causal_order", 0)
+            for value in (predecessors or [])
+        ):
+            checks["causal_chain_coherent"] = False
+            issues.append(_issue("segmentation", [segment_id] if isinstance(segment_id, int) else [], "invalid_predecessor", "A predecessor is missing, invalid, or not earlier.", "Repair predecessor references and causal order."))
+
+    chunks = {normalize_text(chunk.get("chunk_id", "")): normalize_text(chunk.get("text", "")) for chunk in source.get("chunks", [])}
+    for row in rows:
+        segment_id = row.get("segment")
+        citations = row.get("evidence")
+        if not isinstance(citations, list) or not citations:
+            checks["evidence_verified"] = False
+            issues.append(_issue("segmentation", [segment_id] if isinstance(segment_id, int) else [], "missing_evidence", "Segment has no evidence.", "Regenerate the segment with source evidence."))
+            continue
+        for citation in citations:
+            chunk_id = normalize_text(citation.get("chunk_id", "")) if isinstance(citation, dict) else ""
+            quote = normalize_text(citation.get("quote", "")) if isinstance(citation, dict) else ""
+            if chunk_id not in chunks:
+                checks["evidence_verified"] = False
+                issues.append(_issue("segmentation", [segment_id] if isinstance(segment_id, int) else [], "unknown_evidence_chunk", f"Evidence cites unknown chunk {chunk_id!r}.", "Replace it with a real source chunk citation."))
+            elif not quote or quote.casefold() not in chunks[chunk_id].casefold():
+                checks["evidence_verified"] = False
+                issues.append(_issue("segmentation", [segment_id] if isinstance(segment_id, int) else [], "evidence_quote_not_found", f"Evidence quote is absent from chunk {chunk_id!r}.", "Use an exact or whitespace-normalized source quote."))
+
+    controlled = {
+        "generalized_category": config.generalized_categories,
+        "interaction_type": config.interaction_types,
+        "sediment_transport_phase": config.sediment_transport_phases,
+    }
+    for row in rows:
+        invalid = [field for field, values in controlled.items() if row.get(field) not in values]
+        if invalid:
+            checks["categories_valid"] = False
+            segment_id = row.get("segment")
+            issues.append(_issue("categorization", [segment_id] if isinstance(segment_id, int) else [], "invalid_controlled_label", f"Invalid controlled field(s): {', '.join(invalid)}.", "Reclassify the affected segment using the controlled taxonomy."))
+    return checks, issues
+
+
+def validate_candidate_report(candidate: dict[str, Any], source: dict[str, Any], config: PipelineConfig) -> None:
+    """Raise when deterministic candidate facts fail; safe for human-edit validation."""
+    checks, issues = deterministic_candidate_evaluation(candidate, source, config)
+    if issues:
+        detail = "; ".join(f"{item['code']}: {item['message']}" for item in issues)
+        raise ValueError(detail)
+    if not all(checks.values()):
+        raise ValueError("candidate failed deterministic validation")
+
+
+def review_agent(client: ChatClient, candidate: dict[str, Any], source: dict[str, Any], config: PipelineConfig) -> dict[str, Any]:
+    deterministic_checks, deterministic_issues = deterministic_candidate_evaluation(candidate, source, config)
+    if deterministic_issues:
+        return {
+            "doc_id": candidate.get("doc_id", source.get("doc_id")),
+            "status": "revision_required",
+            "summary": "Deterministic candidate validation failed before semantic evaluation.",
+            "issues": deterministic_issues,
+            "checks": deterministic_checks,
+            "evaluation_source": "deterministic",
+        }
+
+    system_prompt = """
+Evaluate the complete candidate report as an ordered set of causal steps, allowing independent branches and roots. Inspect the full report and supplied source chunks,
+not isolated rows. Return JSON only with status pass or revision_required, summary, issues, and all five checks.
+The checks object must contain exactly these Boolean keys on every response:
+{"causal_chain_coherent":true,"evidence_verified":true,"segments_complete":true,
+"segments_unique":true,"categories_valid":true}. Set relevant values false when revision is required; never omit a key.
+Every issue MUST contain all five fields, including segment_ids as an array of integer segment numbers:
+{"stage":"categorization","segment_ids":[1],"code":"wrong_category",
+"message":"Segment 1: generalized_category=Negative Impact on permanent or temporary infrastructure; c1 'Blocks partially destroyed the nets'; T2 requires evidenced decreased sediment passage, which this quote does not establish.",
+"suggested_action":"Reassess connectivity direction under T2; use a replacement only if supported."}
+For a whole-report issue with no affected segment, use "segment_ids":[], never omit it or use null.
+The stage value must be exactly one of "translation", "segmentation", or "categorization".
+
+Assess semantic facts that deterministic code cannot decide reliably:
+- Where translation_applied is true, does translated_text faithfully preserve its original text, including terminology, names, quantities, negation,
+  uncertainty, and causality? Use issue stage translation and fail evidence_verified for translation defects.
+- Where translation_applied is false, translated_text intentionally retains the original language. Minority-language
+  passthrough under skip_translation is not a translation defect; never request translation merely for it.
+  Missing or incorrect interpretation of these passages in the English event/process fields is a segmentation issue.
+  Legacy artifacts without flags retain the contract that translated_text is an English translation.
+- When no separate translated_text is supplied, interpret text directly in its original language, including minority-language passages; identical translations are omitted.
+- Chunk IDs and document IDs are request-local. Respect document boundaries, filenames, and locations when interpreting the chain and citations.
+- Are every segment's event and process written in English?
+- Is each predecessor link supported by source evidence of a direct causal relationship? Chronological order,
+  adjacent descriptions, and shared locations alone do not prove causation. Independent branches and empty predecessors are valid.
+- Are important major stages of the main event missing? Completeness does not require every observation or background fact.
+- Would an expert merge rows because they describe the same major stage? Flag the affected IDs with a targeted merge instruction
+  and fail segments_unique. Repeated measurements, locations, damaged objects, summaries, and captions do not justify separate rows.
+- Are historical events, unrelated background, or emergency/evacuation accounts included without a relevant physical process?
+  Flag these as segmentation scope issues. Do not restore intentionally excluded context merely for completeness.
+- Do not fail a report solely because its segment count falls outside the suggested range.
+- Is every claim supported by its evidence in meaning (citation IDs and quote occurrence are already code-checked)?
+- Is every segment categorized exactly once, and do taxonomy precedence/disambiguation rules fit its role in sediment connectivity?
+- Is the complete report internally consistent?
+
+Issue stage must be translation, segmentation, or categorization. Use stable snake_case issue codes, affected segment IDs (or [] for a
+whole-report omission), a concise message, and an actionable correction instruction. Segmentation issues include missing,
+duplicate, fragmented, unsupported, or misordered causal steps. Categorization issues apply only when the segment chain is
+sound but a controlled label is semantically wrong. Pass only with no issues and every check true. Do not act as a human reviewer.
+
+Independently determine which labels the source supports using the shared rules below before comparing the candidate;
+the classifier's rationale is a claim to verify, not evidence or authority. For every categorization disagreement, the
+message must identify the segment, field/current label, source chunk ID and short quote, and rule ID with an explanation
+of what the current label violates. If the problem is absence of evidence for a direction, say what the source establishes
+and what is missing. Suggest a replacement only when supported; otherwise request evidence-based reassessment using T1/T2.
+Do not flag a supported uncertainty label merely for being nonspecific. Keep summary/messages concise; omit deliberation.
+""".strip() + "\n\n" + EVENT_STAGE_RULES + "\n\n" + TAXONOMY_DECISION_RULES
+    projected, references = source_payload(source.get("chunks", []), language_prompt_context(source))
+
+    def validate(payload: Any) -> None:
+        if isinstance(payload, dict) and payload.get("status") == "revision_required" and isinstance(payload.get("checks"), dict) and isinstance(payload.get("issues"), list):
+            for issue in payload["issues"]:
+                stage = issue.get("stage") if isinstance(issue, dict) else None
+                check = {"translation": "evidence_verified", "segmentation": "causal_chain_coherent", "categorization": "categories_valid"}.get(stage)
+                if check in payload["checks"]:
+                    payload["checks"][check] = False
+        validate_review_payload(payload)
+        real_ids = {row["segment"] for row in candidate["rows"]}
+        for issue in payload["issues"]:
+            unknown = set(issue["segment_ids"]) - real_ids
+            if unknown:
+                raise ValueError(f"evaluation cites unknown segment IDs: {sorted(unknown)}")
+
+    payload = client.complete_json(
+        system_prompt=system_prompt,
+        user_payload={
+            "controlled_labels": config.controlled_labels(),
+            "candidate_report": {"rows": segment_payload(
+                candidate["rows"], review=True,
+                references={permanent: local for local, permanent in references.items()},
+            )

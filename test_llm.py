@@ -28,7 +28,7 @@ from multi_hazard_pipeline.core import DOUBLE_QUOTE_MARKS, model_text, read_json
 from multi_hazard_pipeline.errors import PipelineError
 from multi_hazard_pipeline.payloads import compact_json, model_payload
 from multi_hazard_pipeline.schemas import CitationQuoteMismatch, validate_classification_payload, validate_segment_chain
-from multi_hazard_pipeline.splitter import validate_separation
+from multi_hazard_pipeline.splitter import _ask, validate_separation
 from test_regressions import SmokeClient, blocked_network
 
 
@@ -223,6 +223,41 @@ def check_request_failures(root):
                 model.complete_json(**TASK, validate=validate)
             assert endpoint.call_count == limit and sleep.call_count == limit - 1
         assert len(timings(model)) == limit
+
+
+def check_preparation_connection_resets(root):
+    answer = {"status": "pass", "events": [{"title": "Report", "start_page": 1,
+              "heading_quote": "Report", "confidence": .99}], "collection_end": None, "warnings": []}
+    response = completion(compact_json(answer))
+
+    def reset():
+        failure = ConnectionResetError("[WinError 10054] An existing connection was forcibly closed by the remote host")
+        failure.winerror = 10054
+        return failure
+
+    for name, failures in (("direct", [reset() for _ in range(3)]),
+                           ("wrapped", [error.URLError(reset()) for _ in range(3)])):
+        model = client(root, f"preparation-{name}")
+        with (patch.object(request, "urlopen", side_effect=[*failures, Response(response)]) as endpoint,
+              patch.object(llm, "sleep") as sleep):
+            assert _ask(model, {"pages": [[1, "Report"]]}, ["Report"], set(), allow_empty=False) == answer
+        assert endpoint.call_count == 4
+        assert [call.args[0] for call in sleep.call_args_list] == [5, 10, 20]
+        assert len({call.args[0].data for call in endpoint.call_args_list}) == 1
+        assert model.config.retries == DEFAULT_CONFIG.llm.retries
+
+    for name, failures, expected in (("persistent", [reset() for _ in range(5)], 5),
+                                     ("invalid", [Response(completion('{}')) for _ in range(5)], 3),
+                                     ("unauthorized", [http_failure(401)], 1)):
+        model = client(root, f"preparation-{name}")
+        with (patch.object(request, "urlopen", side_effect=failures) as endpoint,
+              patch.object(llm, "sleep") as sleep):
+            with TestCase().assertRaisesRegex(PipelineError, f"failed after {expected} attempt"):
+                _ask(model, {"pages": [[1, "Report"]]}, ["Report"], set(), allow_empty=False)
+        assert endpoint.call_count == expected
+        assert sleep.call_count == (expected - 1 if name == "persistent" else 0)
+        if name == "persistent":
+            assert [call.args[0] for call in sleep.call_args_list] == [5, 10, 20, 30]
 
 
 def check_citation_time_limits(root):
@@ -589,6 +624,7 @@ def main():
         root = Path(directory)
         check_quotation_preprocessing(root)
         check_request_failures(root)
+        check_preparation_connection_resets(root)
         check_citation_time_limits(root)
         check_repairs(root)
         check_classification_repairs(root)

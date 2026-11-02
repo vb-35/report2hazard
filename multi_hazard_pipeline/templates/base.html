@@ -5,11 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Multi-hazard review{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='shell.css') }}">
+  {% block styles %}{% endblock %}
 </head>
-<body>
-  <header><a href="{{ url_for('index') }}">Multi-hazard review</a></header>
-  <main>{% block content %}{% endblock %}</main>
-  <footer>Local single-process review tool. One pipeline task runs at a time.</footer>
+<body class="{% block body_class %}{% endblock %}">
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <header class="site-header">
+    <div class="site-header__inner">
+      <a class="brand" href="{{ url_for('index') }}" aria-label="Multi-hazard Review home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span><strong>Multi-hazard Review</strong><small>Research workspace</small></span>
+      </a>
+      <span class="local-label">Local workspace</span>
+    </div>
+  </header>
+  <main id="main-content">{% block content %}{% endblock %}</main>
+  <footer class="site-footer"><span>Local review environment</span><span>One pipeline task runs at a time</span></footer>
   {% block scripts %}{% endblock %}
 </body>
 </html>

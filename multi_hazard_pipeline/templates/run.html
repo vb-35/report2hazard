@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ manifest.run_id }} · Multi-hazard review{% endblock %}
+{% block body_class %}workspace-page{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='workspace-modern.css') }}">{% endblock %}
 {% block content %}
 <div id="workspace" data-url="{{ url_for('run_workspace', run_id=manifest.run_id) }}" data-labels='{{ controlled_labels | tojson }}'>
 <header class="workspace-header">
