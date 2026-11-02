@@ -16,6 +16,11 @@
         <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
         <span><strong>Multi-hazard Review</strong><small>Research workspace</small></span>
       </a>
+      <nav class="site-nav" aria-label="Main">
+        {% set endpoint = request.endpoint or '' %}
+        <a href="{{ url_for('index') }}"{% if endpoint == 'index' %} aria-current="page"{% endif %}>Reports</a>
+        <a href="{{ url_for('new_localization') }}"{% if endpoint in ['new_localization', 'start_provided_localization'] %} aria-current="page"{% endif %}>Localization test</a>
+      </nav>
       <span class="local-label">Local workspace</span>
     </div>
   </header>

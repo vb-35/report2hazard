@@ -1,0 +1,17 @@
+{# Model and processing settings shared by both localization forms. #}
+<fieldset class="option-group"><legend>Processing</legend>
+<label>Report evidence<select name="mode"><option value="vision" {% if settings.vision is not defined or settings.vision %}selected{% endif %}>Text and report images</option><option value="text" {% if settings.vision is defined and not settings.vision %}selected{% endif %}>Text only</option></select></label>
+<p class="hint">Image mode uses the localization vision service by default. Text-only mode uses your configured text service.</p>
+<label class="checkbox"><input type="checkbox" name="review" {% if settings.review is not defined or settings.review %}checked{% endif %}>Run spatial self-review</label>
+<label class="checkbox"><input type="checkbox" name="browser_check" {% if settings.browser_check is not defined or settings.browser_check %}checked{% endif %}>Check the generated map in a browser</label>
+<label class="checkbox"><input type="checkbox" name="allow_network" {% if settings.allow_network %}checked{% endif %}>Allow public GIS data acquisition from configured providers</label>
+</fieldset>
+<details><summary>Advanced options</summary>
+<label>Model<input name="model" value="{{ settings.model or '' }}" placeholder="{{ default_model }}"></label>
+<label>Service base URL<input name="api_base_url" type="url" value="{{ settings.api_base_url or '' }}" placeholder="Optional service override, including /v1"></label>
+<label>Output token limit<input name="max_output_tokens" type="number" min="1024" max="100000" value="{{ settings.max_output_tokens or 24000 }}" required></label>
+<label>Segment IDs to process<input name="only" value="{{ (settings.only or []) | join(', ') }}" placeholder="Leave empty to process every segment"></label>
+<p class="hint">Selecting only some segments produces a partial run.</p>
+{% if show_table %}<label>Alternative segment table (CSV or TSV)<input name="segments_table" value="{{ settings.segments_table or '' }}" placeholder="Optional local file path"></label>{% endif %}
+<label>Reviewed figure outline manifest JSON<input name="figure_manifest" value="{{ settings.figure_manifest or '' }}" placeholder="Optional local file path"></label>
+</details>
