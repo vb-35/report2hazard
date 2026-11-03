@@ -274,3 +274,15 @@ class PromptTemplateTests(TestCase):
             self.assertIn(f'init "{tmp / "run folder"}"', text)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_map_check_uses_a_browser_readable_file_uri(tmp_path):
+    # The web interface works on resolve_path() folders (long-path prefix on Windows); the headless
+    # map check must still hand the browser a plain file:/// URI, or it renders an error page.
+    from multi_hazard_pipeline.core import resolve_path
+    from segment_mapping.deliver import _plain_path
+
+    page = resolve_path(tmp_path / "segments_map.html")
+    assert not _plain_path(page).startswith("\\\\?\\")
+    assert Path(_plain_path(page)).as_uri().startswith("file:///")
+    assert _plain_path(Path("\\\\?\\UNC\\server\\share\\map.html")) == "\\\\server\\share\\map.html"

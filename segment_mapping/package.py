@@ -42,6 +42,12 @@ class PackageError(ValueError):
     pass
 
 
+def package_file(pkg: dict, relative: str | Path) -> Path:
+    """Absolute path of a package entry. Resolving collapses '..', which Windows does not do inside
+    long-path prefixed folders (see core.resolve_path), so '../prepared/x.shp' entries stay valid."""
+    return (Path(pkg.get("_dir", ".")) / relative).resolve()
+
+
 def load_package(path: str | Path, *, verify: bool = True) -> dict:
     p = Path(path).resolve()
     pkg = json.loads(p.read_text(encoding="utf-8"))
@@ -56,7 +62,7 @@ def load_package(path: str | Path, *, verify: bool = True) -> dict:
     if len(names) != len(set(names)):
         raise PackageError(f"duplicate names in package: {names}")
     for x in pkg.get("layers", []) + pkg.get("rasters", []):
-        f = Path(pkg["_dir"]) / x["path"]
+        f = package_file(pkg, x["path"])
         if not f.exists():
             raise PackageError(f"{x['name']}: file not found {f}")
     if verify:
@@ -80,7 +86,7 @@ def import_package(run: Run, path: str | Path) -> dict:
     src_meta = {s["name"]: s for s in pkg.get("sources", [])}
     roles: dict = {}
     for lyr in pkg.get("layers", []):
-        f = Path(pkg["_dir"]) / lyr["path"]
+        f = package_file(pkg, lyr["path"])
         g = gpd.read_file(f, layer=lyr.get("layer")) if lyr.get("layer") else gpd.read_file(f)
         if g.crs is None:
             raise PackageError(f"{lyr['name']}: dataset has no CRS")
@@ -93,7 +99,7 @@ def import_package(run: Run, path: str | Path) -> dict:
         roles[lyr["name"]] = {k: lyr.get(k) for k in ("role",) + LAYER_KEYS}
     run = Run(run.dir)  # reload: write_layer/record_source do not touch run.json
     for r in pkg.get("rasters", []):
-        f = Path(pkg["_dir"]) / r["path"]
+        f = package_file(pkg, r["path"])
         meta = src_meta.get(r["name"], {})
         rec = fetch_file(run, r["name"], str(f), provider=meta.get("provider", "provided with the task"), licence=meta.get("licence", ""),
                          licence_url=meta.get("licence_url", ""), use=meta.get("use", r["role"]), date_note=meta.get("date", ""))
@@ -256,7 +262,7 @@ def preflight_package(package, *, report_dir=None, raise_on_error=False, min_dem
             entry = dict(name=item["name"], role=item.get("role"))
             report["layers"].append(entry)
             try:
-                path = Path(pkg.get("_dir", ".")) / item["path"]
+                path = package_file(pkg, item["path"])
                 g = gpd.read_file(path, **({"layer": item["layer"]} if item.get("layer") else {}))
                 if g.crs is None:
                     raise PackageError("dataset has no CRS; supply correctly georeferenced data")
@@ -287,7 +293,7 @@ def preflight_package(package, *, report_dir=None, raise_on_error=False, min_dem
             report["rasters"].append(entry)
             try:
                 import rasterio
-                path = Path(pkg.get("_dir", ".")) / item["path"]
+                path = package_file(pkg, item["path"])
                 with rasterio.open(path) as ds:
                     if ds.crs is None:
                         raise PackageError("raster has no CRS")

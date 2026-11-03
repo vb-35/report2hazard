@@ -168,6 +168,14 @@ def _browser() -> str | None:
     return None
 
 
+def _plain_path(path: Path) -> str:
+    """Path without the Windows long-path prefix: browsers and file URIs do not understand it."""
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + text[8:]
+    return text.removeprefix("\\\\?\\")
+
+
 def check_map(run: Run, wait_ms: int = 20000) -> dict:
     """Load segments_map.html in a headless Chromium/Edge and count rendered layers, dashed paths and tiles."""
     import geopandas as gpd
@@ -179,14 +187,14 @@ def check_map(run: Run, wait_ms: int = 20000) -> dict:
     from .webmap import embedded_counts
 
     static = embedded_counts(text)
-    res = dict(date=today(), file=str(page), expected=expected, static=static)
+    res = dict(date=today(), file=_plain_path(page), expected=expected, static=static)
     exe = _browser()
     if not exe:
         res["browser"] = "none found (set SEGMAP_BROWSER); static checks only"
     else:
         prof = run.dir / "tmp" / "browser_profile"
-        cmd = [exe, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={prof}", f"--virtual-time-budget={wait_ms}",
-               "--dump-dom", page.as_uri()]
+        cmd = [exe, "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={_plain_path(prof)}",
+               f"--virtual-time-budget={wait_ms}", "--dump-dom", Path(_plain_path(page)).as_uri()]
         try:
             dom = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120).stdout
             res.update(browser=Path(exe).name, dom_bytes=len(dom),

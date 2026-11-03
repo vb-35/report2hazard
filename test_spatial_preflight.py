@@ -40,6 +40,24 @@ def test_verified_package_and_readable_reports(tmp_path):
     assert load_package(path)["crs"] == "EPSG:31254"
 
 
+def test_parent_relative_entries_load_from_long_path_prefixed_folder(tmp_path):
+    # The web form hands the loader a resolve_path() result (\\?\ on Windows), which Windows
+    # never normalises; '../shared/x.gpkg' entries must still be found and preflighted.
+    from multi_hazard_pipeline.core import resolve_path
+
+    path = spatial_package(tmp_path)
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "cat.gpkg").rename(tmp_path / "shared/cat.gpkg")
+    (tmp_path / "pkg").mkdir()
+    manifest = json.loads(path.read_text())
+    for entry in manifest["layers"] + manifest["rasters"]:
+        entry["path"] = "../" + ("shared/" if entry["name"] == "cat" else "") + entry["path"]
+    moved = tmp_path / "pkg/package.json"
+    moved.write_text(json.dumps(manifest))
+    assert load_package(resolve_path(moved))["crs"] == "EPSG:31254"
+    assert preflight_package(resolve_path(moved))["ok"]
+
+
 def test_coverage_uses_catchment_and_reports_nodata_and_outside(tmp_path):
     report = preflight_package(spatial_package(tmp_path, nodata=True, width=8))
     assert not report["ok"]
