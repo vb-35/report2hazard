@@ -291,7 +291,7 @@ def check_citation_time_limits(root):
 
     def nested_endpoint(req, *, timeout):
         if json.loads(req.data)["response_format"]["json_schema"]["name"] == "offline_answer":
-            assert timeout == 660
+            assert timeout == 1200
             return Response(completion('{"ok":true}'))
         return stalled(req, timeout=timeout)
 
@@ -446,6 +446,9 @@ def check_classification_repairs(root):
     assert "missing required field 'segment'" in sent[2]["messages"][3]["content"]
     assert "use 'segment', not 'segment_id'" in sent[2]["messages"][3]["content"]
     assert [row["outcome"] for row in timings(model)] == ["parsing_error", "validation_error", "pass"]
+    # Each timing row says what that attempt sent: the effort, and which failure it repairs.
+    assert [row["repair_of"] for row in timings(model)] == [None, "parsing_error", "validation_error"]
+    assert {(row["model"], row["reasoning_effort"]) for row in timings(model)} == {(model.config.model, model.config.reasoning_effort)}
 
     # Correction calls must report the wrong key before reporting missing requested IDs.
     issue = {"stage": "categorization", "segment_ids": [1], "code": "reassess",

@@ -32,7 +32,7 @@ def main():
             default_payload = json.loads(medium._request_body(**args))
             assert default_payload["model"] == "nvidia/Qwen3.8-27B-NVFP4"
             assert default_payload["reasoning_effort"] == "medium"
-            assert medium.config.timeout_seconds == 660
+            assert medium.config.timeout_seconds == 1200
             from io import BytesIO
             from unittest import TestCase
             with (patch.object(b, "available_models", return_value={"data": [{"id": m} for m in b.MODELS]}),

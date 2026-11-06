@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 
 from . import provided_localization as provided
 from .config import PipelineConfig
-from .core import bounded_filename, read_json, resolve_path, run_lock
+from .core import bounded_filename, read_json, resolve_path, run_lock, worker_marker
 from .errors import PipelineError
 from .pipeline import new_run_id, save_manifest, utc_now
 
@@ -130,7 +130,8 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
                 raise PipelineError("Localization already exists. Select Resume to reuse its checkpoints with matching settings.")
             settings = dict(options, **({"translate": translate} if standalone else {}))
             manifest["localization"] = dict(status="queued", activity="Waiting for the pipeline worker",
-                                           settings=settings, package=options["package"], queued_at=utc_now(), log=[])
+                                           settings=settings, package=options["package"], queued_at=utc_now(), log=[],
+                                           worker=worker_marker())
             save_manifest(run_dir, manifest)
 
         def update(**changes):

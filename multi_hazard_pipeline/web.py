@@ -14,7 +14,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 from werkzeug.utils import secure_filename
 
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import bounded_filename, display_path, read_json, resolve_path, run_lock
+from .core import bounded_filename, display_path, read_json, resolve_path, run_lock, worker_alive, worker_marker
 from .errors import PipelineError
 from .human_review import apply_candidate_edits, approve_run, reject_run, request_correction
 from .llm import ChatClient
@@ -124,10 +124,60 @@ def _submit(app: Flask, task: str, run_dir: Path, operation: Callable[..., Any],
             _record_worker_failure(run_dir, task, exc)
 
     try:
+        with run_lock(run_dir):  # queued work belongs to this server process until it runs
+            manifest = read_json(run_dir / "manifest.json")
+            manifest["worker"] = worker_marker()
+            save_manifest(run_dir, manifest)
         app.extensions["pipeline_executor"].submit(work)
     except Exception as exc:
         _record_worker_failure(run_dir, task, exc)
         raise PipelineError(f"could not queue {task}: {exc}") from exc
+
+
+INTERRUPTED = "Interrupted: the process running this work stopped before it finished"
+
+
+def _recover_interrupted(root: Path) -> list[str]:
+    """Mark work whose process has stopped as failed, so its run page does not show "running" forever.
+
+    Only work recorded with a worker process on this machine that no longer exists is changed: runs started by
+    another live process (a command-line run, a batch, a second interface) and runs without a marker are left alone.
+    Extraction approval is kept: an interrupted localization only fails the localization stage.
+    """
+    from .localization_web import BUSY
+
+    recovered = []
+    for path in sorted(root.glob("*/manifest.json")):
+        run_dir = path.parent
+        try:
+            with run_lock(run_dir):
+                manifest = read_json(path)
+                changed = False
+                if manifest.get("status") in {"running", "queued"} and worker_alive(manifest.get("worker")) is False:
+                    stage = manifest.get("current_stage") or "pipeline"
+                    manifest["status"] = "failed"
+                    if manifest.get("stages", {}).get(stage) in {"running", "queued", "pending"}:
+                        manifest["stages"][stage] = "failed"
+                    manifest.setdefault("errors", []).append(
+                        {"stage": stage, "type": "Interrupted", "message": INTERRUPTED, "timestamp": utc_now()})
+                    changed = True
+                localization = manifest.get("localization") or {}
+                interrupted_localization = (localization.get("status") in BUSY
+                                            and worker_alive(localization.get("worker")) is False)
+                if interrupted_localization:
+                    localization.update(status="failed", error=INTERRUPTED + "; select Resume to continue from its checkpoints",
+                                        activity="Localization interrupted", finished_at=utc_now(), updated_at=utc_now())
+                    changed = True
+                if changed:
+                    save_manifest(run_dir, manifest)
+                    recovered.append(run_dir.name)
+                if interrupted_localization and is_provided(manifest):
+                    from .provided_localization import finish_stage
+
+                    finish_stage(run_dir, "failed")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue  # an unreadable run is listed as such elsewhere; never block the server start
+    return recovered
 
 
 def _display_status(manifest: dict[str, Any]) -> str:
@@ -419,6 +469,7 @@ def create_app(
     )
     if owned_executor:
         atexit.register(app.extensions["pipeline_executor"].shutdown, wait=False)
+    _recover_interrupted(root)
 
     def index_error(message: str, status: int = 400):
         return render_template("index.html", runs=_list_runs(root), error=message), status

@@ -178,6 +178,8 @@ class ChatClient:
         chunk_sizes = [len(chunk.get("text", "")) for chunk in chunks]
         for attempt in range(1, max_attempts + 1):
             started = perf_counter()
+            # What this attempt sends: a repair carries the previous failed answer and its error.
+            sent_repair = repair["kind"] if repair else None
             request_timeout = self.config.timeout_seconds
             if timeout_seconds is not None:
                 request_timeout = min(request_timeout, timeout_seconds)
@@ -258,6 +260,8 @@ class ChatClient:
             if self.timing_path is not None:
                 append_timing(self.timing_path, {
                     "type": "llm_call", "task": task, "attempt": attempt, "outcome": outcome,
+                    "model": self.config.model, "reasoning_effort": self.config.reasoning_effort,
+                    "repair_of": sent_repair, "max_output_tokens": self.config.max_output_tokens,
                     "elapsed_seconds": round(perf_counter() - started, 3),
                     "network_seconds": round(network_seconds, 3),
                     "timeout_seconds": max(0.0, request_timeout),

@@ -53,6 +53,38 @@ class LocalizationWebTests(TestCase):
     def saved_manifest(self):
         return read_json(self.run / "manifest.json")
 
+    def test_server_start_fails_work_of_stopped_processes_only(self):
+        import socket
+        import subprocess
+        import sys
+        from multi_hazard_pipeline.core import worker_marker
+
+        finished = subprocess.Popen([sys.executable, "-c", "pass"])
+        finished.wait()  # its pid now belongs to no live process
+        dead = {"pid": finished.pid, "host": socket.gethostname()}
+        self.client.post(self.url, data=self.form)
+        manifest = self.saved_manifest()
+        self.assertEqual(manifest["localization"]["worker"], worker_marker())
+        # Interface stopped while localizing: the old worker process is gone.
+        manifest["localization"].update(status="running", worker=dead)
+        pipeline.save_manifest(self.run, manifest)
+        other = pipeline.create_run(self.root / "inputs", self.root / "results")
+        other.update(status="running", current_stage="extraction", worker=worker_marker())  # a live process
+        pipeline.save_manifest(Path(other["artifact_dir"]), other)
+        unmarked = pipeline.create_run(self.root / "inputs", self.root / "results")
+        unmarked.update(status="approved", localization={"status": "queued"})  # e.g. a batch run waiting for its start
+        pipeline.save_manifest(Path(unmarked["artifact_dir"]), unmarked)
+
+        self.assertIs(web.worker_alive(dead), False)
+        client =web.create_app(self.root / "results", executor=QueuedExecutor()).test_client()
+        state = client.get(self.url + "/status").json
+        self.assertEqual(state["info"]["status"], "failed")
+        self.assertIn("Interrupted", state["info"]["error"])
+        self.assertFalse(state["busy"])
+        self.assertEqual(self.saved_manifest()["status"], "approved")  # extraction approval is kept
+        self.assertEqual(read_json(Path(other["artifact_dir"]) / "manifest.json")["status"], "running")
+        self.assertEqual(read_json(Path(unmarked["artifact_dir"]) / "manifest.json")["localization"]["status"], "queued")
+
     def test_form_and_approval_gate(self):
         page = self.client.get(self.url)
         self.assertEqual(page.status_code, 200)

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import DEFAULT_CONFIG, PipelineConfig
-from ..core import read_json, run_lock, write_json
+from ..core import read_json, run_lock, worker_marker, write_json
 from ..errors import PipelineError
 
 FRAME_PROMPT = """
@@ -270,8 +270,10 @@ def segment_schema(seg_id: int | str, cand_ids: list[str], methods: list[str], v
         "is_hypo": {"type": "integer", "enum": [0, 1]}, "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         "evidence_type": {"type": "string", "enum": ["text", "table", "mixed"]},
         "quotes": {"type": "array", "items": {"type": "object", "additionalProperties": False,
-                                               "properties": {"page": {"type": "integer"}, "text": {"type": "string"}},
-                                               "required": ["page", "text"]}},
+                                               "properties": {"page": {"type": "integer"}, "text": {"type": "string", "minLength": 1}},
+                                               "required": ["page", "text"]},
+                   # Every part needs a quote; only verified report outlines (report_outline) may come without one.
+                   **({} if "report_outline" in methods else {"minItems": 1})},
         "rep_value": {"type": "string"}, "reasoning": {"type": "string", "minLength": 1},
         "uncertainty": {"type": "string", "minLength": 1}, "alternatives": {"type": "string"},
         "reason_is_hypo": {"type": "string", "minLength": 1}, "reason_confidence": {"type": "string", "minLength": 1}},
@@ -1109,7 +1111,7 @@ class Localizer:
         from segment_mapping.runctx import Run
 
         started = _now()
-        self._status({"status": "running", "started_at": started, "package": str(self.package)})
+        self._status({"status": "running", "started_at": started, "package": str(self.package), "worker": worker_marker()})
         try:
             self.log("Preparing localization run folder")
             self.prepare()

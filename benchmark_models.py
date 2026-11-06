@@ -59,7 +59,7 @@ def prepare(spec, directory):
             if Path(p).suffix.lower() not in {".pdf", ".docx", ".txt"}:
                 raise ValueError(f"Unsupported input: {p}")
         report["sha256"] = {p: fingerprint(p) for p in report["inputs"]}
-    llm = replace(DEFAULT_CONFIG.llm, timeout_seconds=spec.get("timeout_seconds", 660))
+    llm = replace(DEFAULT_CONFIG.llm, timeout_seconds=spec.get("timeout_seconds", DEFAULT_CONFIG.llm.timeout_seconds))
     settings = asdict(replace(DEFAULT_CONFIG, llm=llm))
     settings["llm"].pop("api_base_url")
     settings["schema_path"] = str(settings["schema_path"])

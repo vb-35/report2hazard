@@ -59,6 +59,43 @@ def run_lock(path: Path):
         yield
 
 
+def worker_marker() -> dict[str, Any]:
+    """Identify the process that runs or queued a run, so a later server start can tell stale work from live work."""
+    import socket
+
+    return {"pid": os.getpid(), "host": socket.gethostname()}
+
+
+def worker_alive(marker: Any) -> bool | None:
+    """True/False for a worker process on this machine; None when unknown (no marker, or another machine)."""
+    import socket
+
+    if not isinstance(marker, dict) or not isinstance(marker.get("pid"), int) or marker.get("host") != socket.gethostname():
+        return None
+    pid = marker["pid"]
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":  # os.kill(pid, 0) would send CTRL_C_EVENT on Windows
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\x00", " ")).strip()
 

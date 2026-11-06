@@ -2,7 +2,10 @@
 
 ## Interface
 
-- [ ] **Mark interrupted localizations as failed on server start.**
+- [x] **Mark interrupted localizations as failed on server start.** Done 2026-11-06: queued/running work records
+  its process (`worker` = pid and host, for extraction runs and localizations); `create_app` marks work as failed
+  only when that process no longer exists on this machine. Runs of other live processes (command line, night batch,
+  a second interface) and runs without a marker are left alone. Original note:
   If the interface server stops while a localization is running (for example, the console window is closed), the
   run's `manifest.json` keeps `localization.status = "running"`. The run page then shows "running" forever,
   although no process is working on it and no model calls are made.
@@ -50,7 +53,8 @@ from start to finished map. Placement used 101 min, but only 16 of its 35 calls 
   use at most 13,110 tokens (median ~4,000), while 2 of the 3 truncated placement calls spent all 24,000
   tokens on reasoning without starting an answer. Consider retrying those sooner at `low` effort rather
   than waiting ~7 min for each to hit the cap.
-- [ ] **Record the reasoning effort and whether a call is a repair in `timings.jsonl`.** Today neither is logged;
+- [x] **Record the reasoning effort and whether a call is a repair in `timings.jsonl`.** Done 2026-11-06: each row
+  has `model`, `reasoning_effort`, `max_output_tokens` and `repair_of` (null, or the failure kind it repairs). Today neither is logged;
   on 2026-11-03 it had to be reconstructed from the absence of `*_recovery.json` files (the low-effort
   recovery never ran: all 35 placement calls were `medium`). Analysis of that run: first attempts use
   3,500–24,000 reasoning tokens and are usually rejected; repairs (failed answer + error sent back, same
@@ -94,3 +98,7 @@ synced into the answer; review fields no longer cut at 500 characters).
   limits both come from the report.
 - [ ] **Run-to-run variance.** Seigesbach segment 3 was located on 2026-11-03 and unresolved on 2026-11-04.
   Repeat runs before comparing models or prompts (`benchmark_models.py` requires at least 2 repeats).
+- [x] **Client timeout raised from 660 s to 1200 s** (2026-11-06), now that the GPU router no longer stops requests at
+  600 s; under three parallel reports the slowest placement call took 575 s.
+- [x] **Placement parts require at least one quote** in the answer schema (12 rejections, ~50 min on 2026-11-04),
+  except when verified report outlines are offered.

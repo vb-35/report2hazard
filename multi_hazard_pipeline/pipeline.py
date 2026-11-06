@@ -20,7 +20,7 @@ from .agents import (
     translation_agent,
 )
 from .config import DEFAULT_CONFIG, PipelineConfig
-from .core import normalize_text, read_json, resolve_path, write_json
+from .core import normalize_text, read_json, resolve_path, worker_marker, write_json
 from .errors import PipelineError
 from .language import language_settings, language_summary, recorded_language_config
 from .llm import ChatClient, append_timing
@@ -440,6 +440,7 @@ def execute_run(
     manifest = read_json(run_dir / "manifest.json")
     config = recorded_language_config(config, manifest)
     manifest["status"] = "running"
+    manifest["worker"] = worker_marker()  # lets a restarted interface recognise this run as interrupted
     input_paths = [Path(item["path"]) for item in manifest["inputs"]]
     active_stage = "extraction"
     try:

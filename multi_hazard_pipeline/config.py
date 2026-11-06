@@ -96,7 +96,9 @@ class LLMConfig:
     retries: int = 3
     temperature: float = 0.0
     reasoning_effort: str | None = "medium"
-    timeout_seconds: int = 660
+    # The GPU router no longer stops requests at 600 s (nginx fixed 2026-11-04). Placement calls under parallel load
+    # reached 575 s, so wait up to 20 minutes before retrying.
+    timeout_seconds: int = 1200
     max_request_chars: int = 200000
     # Optional cap on generated tokens (reasoning included). None keeps the server default. A cap ends runaway
     # generations that a server keeps running after the client has disconnected.
