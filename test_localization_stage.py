@@ -338,6 +338,84 @@ class LocalizationStageTests(TestCase):
         window = part['geometry']['buffer']['geom']['window']
         self.assertEqual(window, {"line": "R1", "center": {"representative_point": "K1"}, "length_m": 100.0})
 
+    def test_agent_lowers_rule_bound_confidences_instead_of_rejecting(self):
+        from segment_mapping.templates import Compiler
+
+        facts = {"candidates": [{"id": "S1", "kind": "streams", "name": "A", "expr": {}, "layer": "s"},
+                                {"id": "C1", "kind": "catchment", "name": "A", "expr": {}, "layer": "c"},
+                                {"id": "P1", "kind": "names", "name": "X", "expr": {}, "geom_type": "Point", "layer": "n"},
+                                {"id": "P2", "kind": "names", "name": "Y", "expr": {}, "geom_type": "Polygon", "layer": "n"}]}
+        comp = Compiler(facts, {"main_stream": "S1", "catchment": "C1", "named_features": []}, {}, chainage=False)
+        high = {"method": "feature", "args": {"candidate": "P2"}, "is_hypo": 0, "confidence": "high",
+                "location_confidence": "high", "boundary_confidence": "medium", "geometry_role": "location",
+                "reason_confidence": "named in the report"}
+        cp = comp.compile_part("1", "1a", high, adjust=True)
+        self.assertEqual((cp["confidence"], cp["location_confidence"], cp["boundary_confidence"]), ("medium", "medium", "unknown"))
+        self.assertIn("Code adjustment: confidence lowered to medium", cp["reason_confidence"])
+        # A corrected answer that echoes the stored note gets it once, not twice.
+        again = comp.compile_part("1", "1a", dict(high, reason_confidence=cp["reason_confidence"]), adjust=True)
+        self.assertEqual(again["reason_confidence"], cp["reason_confidence"])
+        assumed = {"method": "feature", "args": {"candidate": "P1"}, "is_hypo": 0, "confidence": "medium",
+                   "geometry_role": "event_extent", "boundary_confidence": "medium", "reason_confidence": "x",
+                   "parameter": {"value": 10, "basis": "assumption"}}
+        cp = comp.compile_part("1", "1a", assumed, adjust=True)
+        self.assertEqual((cp["confidence"], cp["boundary_confidence"]), ("low", "low"))
+        again = comp.compile_part("1", "1a", dict(assumed, reason_confidence=cp["reason_confidence"]), adjust=True)
+        self.assertEqual(again["reason_confidence"], cp["reason_confidence"])
+        self.assertEqual(cp["reason_confidence"].count("rule 5d: extent without basis"), 1)
+
+    def test_stored_answers_match_the_built_parts(self):
+        from multi_hazard_pipeline.agents.localization_agent import localize_run
+
+        class Overconfident(FakeModel):
+            def complete_json(self, **kwargs):
+                validate = kwargs.pop("validate")
+                answer = super().complete_json(validate=lambda a: None, **kwargs)
+                if kwargs["response_schema"]["name"] == "segment_placement":
+                    answer["event_confidence"] = "high"  # above every part's medium
+                validate(answer)
+                return answer
+
+        res = localize_run(self.pipe, self.pkg, client=Overconfident(), vision=False, browser_check=False, log=lambda m: None)
+        self.assertEqual(res["status"], "delivered", res.get("build"))
+        llm = self.pipe / "localization/llm"
+        seg1 = json.loads((llm / "segment_1.json").read_text(encoding="utf-8"))["answer"]
+        self.assertEqual(seg1["event_confidence"], "medium")
+        self.assertIn("Code adjustment: event_confidence lowered from high to medium", seg1["reason"])
+        # Rule 5d (assumed band height) makes segment 2 low and a hypothesis: the stored answer says so too.
+        part = json.loads((llm / "segment_2.json").read_text(encoding="utf-8"))["answer"]["parts"][0]
+        self.assertEqual((part["confidence"], part["is_hypo"]), ("low", 1))
+        self.assertTrue(part["reason_confidence"].startswith("rule 5d:"))
+
+    def test_only_corrected_segments_are_reviewed_again(self):
+        from PIL import Image
+        from multi_hazard_pipeline.agents.localization_agent import localize_run
+
+        picture = Image.new("RGB", (160, 120), "red")
+        picture.save(self.tmp / "report.pdf", save_all=True, append_images=[picture, picture, picture])
+        picture.close()
+
+        class OneIssue(FakeModel):
+            reviewed = []
+
+            def complete_json(self, **kwargs):
+                if kwargs["response_schema"]["name"] != "localization_review":
+                    return super().complete_json(**kwargs)
+                super().complete_json(**kwargs)
+                sid = kwargs["user_payload"]["placement"]["segment"]
+                self.reviewed.append(sid)
+                if sid == "2" and self.reviewed.count("2") == 1:
+                    return {"status": "revision_required", "summary": "fix", "issues": [{"segment": "2", "part_id": "2a",
+                            "code": "quote_support", "message": "m", "suggested_action": "a"}]}
+                return {"status": "pass", "summary": "ok", "issues": []}
+
+        model = OneIssue()
+        res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, log=lambda m: None)
+        self.assertEqual(res["status"], "delivered", res.get("build"))
+        self.assertEqual(model.reviewed, ["1", "2", "3", "2"])
+        self.assertEqual(res["review"]["status"], "pass")
+        self.assertEqual(len(res["review"]["summary"].splitlines()), 3)
+
 
 class RunPageTests(TestCase):
     def test_constant_offset_is_backward_compatible(self):

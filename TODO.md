@@ -24,10 +24,16 @@ Measured on `results/seigesbach__2026-11-03_10-36-13-502354Z` (9 segments, Qwen3
 `medium` for every call, 24,000-token output cap): 65 model calls, about 157 min of generation, about 2 h 55 min
 from start to finished map. Placement used 101 min, but only 16 of its 35 calls were accepted.
 
-- [ ] **Stop rejecting placements for an empty `reason_is_hypo`.** This is the most common validation error.
-  Either fill it deterministically when the part is not a hypothesis, or flag it more clearly in the
-  placement prompt/schema.
-- [ ] **Cap result confidence to its parts instead of rejecting the call.** "result location/boundary_confidence
+- [x] **Stop rejecting placements for an empty `reason_is_hypo`.** This is the most common validation error
+  (43 rejections, ~145 min over the five Austrian reports on 2026-11-04). Done 2026-11-06: the placement prompt
+  defines `reason_is_hypo` and `reason_confidence` (a sentence, not a level word), and the schema requires the part
+  text fields to be non-empty (`minLength: 1`). Check after the next run that the server enforces `minLength`.
+- [x] **Cap result confidence to its parts instead of rejecting the call.** Done 2026-11-06 for the localization
+  agent (`compile_part(..., adjust=True)`): over-high part/result confidences, boundary confidence on parts without an
+  event boundary, unresolved results with a confidence, and visual observations without `evidence_type=mixed` are now
+  lowered or set by code and recorded as "Code adjustment: ..." in `reason_confidence`/`reason`. The stored answer
+  is synced with the built part (rule 5d values included), so the review no longer sees two different confidences.
+  The `placements.json` toolkit still raises. Original note: "result location/boundary_confidence
   cannot exceed the confidence of its supporting parts" can be fixed deterministically by lowering the result
   value; record the adjustment in the output. Check whether "high requires a uniquely named GIS feature" and
   "assumed extent cannot have medium/high boundary confidence" can be lowered the same way.
@@ -67,5 +73,24 @@ from start to finished map. Placement used 101 min, but only 16 of its 35 calls 
     text, so saving it is possible.
 - [ ] **Keep finished reviews in the checkpoint.** After the resume on 2026-11-03, reviews 1–8 were redone
   (~9 min).
-- [ ] **Re-review only the corrected segments.** After 7 correction calls the review ran again for all 9
+- [x] **Re-review only the corrected segments.** Done 2026-11-06 (vision mode; text-only mode still reviews in one
+  call). After 7 correction calls the review ran again for all 9
   segments (~15 min).
+
+## Localization quality (night batch 2026-11-04, five Austrian reports)
+
+Runs in `tatzelwurm:~/report2hazard/results/*__2026-11-04_13-3*` (batch files in `~/report2hazard-batch-20261104/`).
+The Swiss Glyssibach, Rotlauibach and Trachtbach reports hold almost no location information and are excluded from
+evaluation and future runs. 13 of the 24 open review issues were review artifacts (fixed 2026-11-06: rule 5d values
+synced into the answer; review fields no longer cut at 500 characters).
+
+- [ ] **Figure captions fail quote verification in evidence linking.** Firschnitzbach 33 (deposition behind the
+  arch dam) stayed unresolved: its three "Abbildung 67-69" captions naming the Bogensperre were dropped as "quote not
+  verified", and table 15 with the dam stations (hm 18.18/18.38) was never linked. Check `resolve_quote` against
+  caption text (spacing, hyphenation, captions only in `report_captions.json`).
+- [ ] **Fit reported areas automatically.** The model sets `report_area_ha` but not `fit_report_area`, so the
+  assumed band height gives areas far from the report: Schnannerbach 26 (11.9 ha mapped / 2.73 ha reported),
+  Schallerbach 15 (14.75 / 8 ha), Seigesbach (2.5 / 7.5 ha). Consider fitting when the report area and the reach
+  limits both come from the report.
+- [ ] **Run-to-run variance.** Seigesbach segment 3 was located on 2026-11-03 and unresolved on 2026-11-04.
+  Repeat runs before comparing models or prompts (`benchmark_models.py` requires at least 2 repeats).

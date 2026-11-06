@@ -149,8 +149,18 @@ class Compiler:
         raise TemplateError(f"the spatial package has no '{role}' layer")
 
     # ------------------------------------------------------------------ parts
-    def compile_part(self, seg_id: str, part_id: str, ans: dict) -> dict:
+    def compile_part(self, seg_id: str, part_id: str, ans: dict, adjust: bool = False) -> dict:
+        """Compile one model part. With adjust=True, confidences above what the rules allow are lowered to the highest
+        allowed level and the change is recorded in reason_confidence, instead of raising for a model repair."""
         m = ans["method"]
+        adjusted: list[str] = []
+
+        def lower(message: str, field: str, value: str, why: str) -> str:
+            if not adjust:
+                raise TemplateError(message)
+            adjusted.append(f"{field} lowered to {value}: {why}")
+            return value
+
         a = {k: ans.get("args", {}).get(k) for k in ARG_KEYS}
         figure = self.figures.get(a.get("candidate")) if m == "report_outline" else None
         if m == "report_outline" and (not figure or str(seg_id) not in figure["segments"]):
@@ -179,7 +189,9 @@ class Compiler:
         if m == "feature" and rule5d:
             placement = "modelled"
         is_hypo, conf = int(ans.get("is_hypo", 1)), ans.get("confidence", "low")
-        reasons = dict(reason_is_hypo=ans.get("reason_is_hypo", ""), reason_confidence=ans.get("reason_confidence", ""))
+        # A corrected answer may echo notes the code added before: strip them so they are not repeated.
+        reasons = {key: re.sub(r"^rule 5d: [^;]*; ", "", str(ans.get(key, "")).split(" Code adjustment:")[0]).strip()
+                   for key in ("reason_is_hypo", "reason_confidence")}
         if rule5d:
             is_hypo, conf = 1, "low"
             reasons = dict(reason_is_hypo="rule 5d: the report gives no extent for this part (parameter is an assumption); " + reasons["reason_is_hypo"],
@@ -189,7 +201,7 @@ class Compiler:
             if parameter and parameter.get("value", 0) > 500:
                 raise TemplateError("point_area radius above 500 m: an area that large is not a point. Use catchment, valley_floor "
                                     "or reach_corridor between named limits, or explain a smaller radius")
-        self._check_classification(m, a, is_hypo, conf, report_area)
+        conf = self._check_classification(m, a, is_hypo, conf, report_area, lower)
         quotes = [{"pdf_page": q.get("page"), "text": q.get("text", "")} for q in ans.get("quotes", []) if q.get("text")]
         basis_txt = f"{m}: " + ", ".join(f"{k}={v}" for k, v in a.items() if v not in (None, "", False) and k != "expression")
         if parameter:
@@ -208,13 +220,20 @@ class Compiler:
             elif m == "location_point":
                 cid = str(a.get("center", "")).removeprefix("feature:").removeprefix("place:")
             if m not in ("catchment", "feature", "feature_geometry", "location_point") or cid not in self.named:
-                raise TemplateError("high location confidence requires a uniquely named GIS feature; use medium/low for inference or proximity")
+                location_confidence = lower("high location confidence requires a uniquely named GIS feature; use medium/low for "
+                                            "inference or proximity", "location_confidence", "medium",
+                                            "high needs a uniquely named GIS feature")
         if role != "event_extent" and boundary != "unknown":
-            raise TemplateError("a location/context/search area has no event boundary: boundary_confidence must be unknown")
+            boundary = lower("a location/context/search area has no event boundary: boundary_confidence must be unknown",
+                             "boundary_confidence", "unknown", f"a {role} part has no event boundary")
         if boundary == "high" and m != "report_outline":
-            raise TemplateError("high boundary confidence requires a verified report outline, not a reconstructed template")
+            boundary = lower("high boundary confidence requires a verified report outline, not a reconstructed template",
+                             "boundary_confidence", "medium", "high needs a verified report outline")
         if rule5d and boundary not in ("low", "unknown"):
-            raise TemplateError("assumed extent cannot have medium or high boundary confidence")
+            boundary = lower("assumed extent cannot have medium or high boundary confidence",
+                             "boundary_confidence", "low", "the extent rests on an assumed parameter (rule 5d)")
+        if adjusted:
+            reasons["reason_confidence"] = (reasons["reason_confidence"].rstrip() + " Code adjustment: " + "; ".join(adjusted) + ".").strip()
         result = {
             "part_id": part_id, "seg_id": seg_id, "part_label": ans.get("label", "")[:120], "geometry": g, "parameter": parameter,
             "placement": placement, "is_hypo": is_hypo, "confidence": conf, "rule_5d": rule5d,
@@ -239,19 +258,25 @@ class Compiler:
                 georeferencing_limitations=figure["georeferencing_assessment"]["accuracy_note"])
         return result
 
-    def _check_classification(self, m, a, is_hypo, conf, report_area):
+    def _check_classification(self, m, a, is_hypo, conf, report_area, lower=None) -> str:
+        """Return the part confidence; `lower` (from compile_part) either raises or lowers and records."""
+        if lower is None:
+            def lower(message, *_):
+                raise TemplateError(message)
         if conf == "high":
             cid = a.get("candidate") or ("catch" if m == "catchment" else None)
             if m == "location_point":
                 cid = str(a.get("center", "")).removeprefix("feature:").removeprefix("place:")
             cid = self.frame["catchment"] if cid == "catch" else cid
             if is_hypo != 0:
-                raise TemplateError("confidence high requires is_hypo 0")
-            if m not in ("catchment", "feature", "feature_geometry", "location_point") or cid not in self.named:
-                raise TemplateError("confidence high is only for a feature the report names that matches exactly one GIS feature "
-                                    "(frame certainty 'named'); use medium or low")
+                conf = lower("confidence high requires is_hypo 0", "confidence", "medium", "a hypothesis (is_hypo 1) cannot be high")
+            elif m not in ("catchment", "feature", "feature_geometry", "location_point") or cid not in self.named:
+                conf = lower("confidence high is only for a feature the report names that matches exactly one GIS feature "
+                             "(frame certainty 'named'); use medium or low", "confidence", "medium",
+                             "high is only for a named feature matching exactly one GIS feature")
         if m == "buildings_near" and is_hypo == 0:
             raise TemplateError("buildings_near selects candidates by proximity: is_hypo must be 1 (proximity is not damage)")
+        return conf
 
     def _sources(self, m, a) -> str:
         ids = [a.get(k) for k in ("candidate", "stream", "river") if a.get(k)]

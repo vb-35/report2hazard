@@ -108,8 +108,10 @@ Rules:
    inferred identity, or an extent without basis.
 7. quotes: 1-3 exact quotations in the ORIGINAL language copied from segment.evidence or the 'original' page text,
    each with its page number. Never translate or shorten inside a quote.
-8. label (short), reasoning (why this place and method), uncertainty, alternatives (required when is_hypo is 1),
-   reason_is_hypo, reason_confidence, rep_value (a report number used for comparison, or "").
+8. Text fields of every part, none empty: label (short), reasoning (why this place and method), uncertainty,
+   alternatives (required when is_hypo is 1), reason_is_hypo (one sentence on why is_hypo is 0 or 1, also when it is 0,
+   e.g. "the report names this bridge and one GIS feature matches"), reason_confidence (one sentence on why that
+   confidence level, not the level word alone), rep_value (a report number used for comparison, or "").
 9. Record event_confidence (correct event and process), location_confidence (geographic identity), and boundary_confidence
    separately as high/medium/low/unknown at result and part level. An identified catchment does not verify an event boundary.
    Native location geometry has unknown boundary_confidence. Template reconstruction cannot have high boundary confidence.
@@ -172,6 +174,19 @@ In review, check visual claims against attached images as well as text, includin
 
 CATCHMENT_WIDE = ("triggering event", "unstable pre-event conditions", "favourable topography", "material mobilization",
                   "material mobilisation")
+
+
+# Review sees whole part texts: a 500-character cut was reported back as "truncated reasoning".
+REVIEW_FIELD_CHARS = 4000
+
+# Part fields the code may set or lower (rule 5d, point areas, confidence limits); copied back into the stored answer.
+SYNCED_PART_FIELDS = ("is_hypo", "confidence", "event_confidence", "location_confidence", "boundary_confidence",
+                      "geometry_role", "evidence_type", "reason_is_hypo", "reason_confidence")
+
+
+def _note_adjustments(ans: dict, adjusted: list[str]) -> None:
+    reason = str(ans.get("reason", "")).split(" Code adjustment:")[0].rstrip()  # never repeat an echoed earlier note
+    ans["reason"] = (reason + " Code adjustment: " + "; ".join(adjusted) + ".").strip() if adjusted else reason
 
 
 def catchment_wide(seg: dict) -> bool:
@@ -246,7 +261,7 @@ def segment_schema(seg_id: int | str, cand_ids: list[str], methods: list[str], v
         else:
             args[k] = _nullable("string")
     part = {"type": "object", "additionalProperties": False, "properties": {
-        "label": {"type": "string"}, "method": {"type": "string", "enum": methods},
+        "label": {"type": "string", "minLength": 1}, "method": {"type": "string", "enum": methods},
         "args": {"type": "object", "additionalProperties": False, "properties": args, "required": list(ARG_KEYS)},
         "parameter": {"type": "object", "additionalProperties": False, "properties": {
             "value": _nullable("number"), "basis": {"type": "string", "enum": ["report_value", "data_measurement", "assumption", "none"]},
@@ -257,8 +272,9 @@ def segment_schema(seg_id: int | str, cand_ids: list[str], methods: list[str], v
         "quotes": {"type": "array", "items": {"type": "object", "additionalProperties": False,
                                                "properties": {"page": {"type": "integer"}, "text": {"type": "string"}},
                                                "required": ["page", "text"]}},
-        "rep_value": {"type": "string"}, "reasoning": {"type": "string"}, "uncertainty": {"type": "string"},
-        "alternatives": {"type": "string"}, "reason_is_hypo": {"type": "string"}, "reason_confidence": {"type": "string"}},
+        "rep_value": {"type": "string"}, "reasoning": {"type": "string", "minLength": 1},
+        "uncertainty": {"type": "string", "minLength": 1}, "alternatives": {"type": "string"},
+        "reason_is_hypo": {"type": "string", "minLength": 1}, "reason_confidence": {"type": "string", "minLength": 1}},
         "required": ["label", "method", "args", "parameter", "is_hypo", "confidence", "evidence_type", "quotes", "rep_value",
                      "reasoning", "uncertainty", "alternatives", "reason_is_hypo", "reason_confidence"]}
     confidence = {"type": "string", "enum": ["high", "medium", "low", "unknown"]}
@@ -328,6 +344,7 @@ class Localizer:
         self.vision = vision
         self.report_images = None
         self.segment_images: dict[str, list[str]] = {}
+        self.segment_reviews: dict[str, dict] = {}  # latest vision review per segment
         self.visuals: dict[str, list[dict]] = {}
         self.resume = resume
         self.allow_network = allow_network
@@ -766,13 +783,17 @@ class Localizer:
 
         def validate(ans):
             errs = []
+            adjusted = []  # rule-bound confidences the code lowers itself instead of asking the model for a repair
             compiled.clear()
             visuals.clear()
             if ans["localization_status"] == "unresolved":
                 if ans["parts"]:
                     raise ValueError("unresolved results must have no parts; explain the missing evidence in reason")
-                if ans["location_confidence"] != "unknown" or ans["boundary_confidence"] != "unknown":
-                    raise ValueError("an unresolved location requires unknown location and boundary confidence")
+                for field in ("location_confidence", "boundary_confidence"):
+                    if ans[field] != "unknown":
+                        adjusted.append(f"{field} set to unknown: an unresolved result has no location")
+                        ans[field] = "unknown"
+                _note_adjustments(ans, adjusted)
                 return
             if not ans["parts"]:
                 raise ValueError("located results need at least one supported location or footprint")
@@ -785,7 +806,7 @@ class Localizer:
                     errs.append(f"part {k + 1}: model-supplied coordinates are not verified inputs; select a candidate or request data")
                     continue
                 try:
-                    cp = self.compiler.compile_part(sid, pid, part)
+                    cp = self.compiler.compile_part(sid, pid, part, adjust=True)
                 except TemplateError as exc:
                     errs.append(f"part {k + 1} ({part.get('method')}): {exc}")
                     continue
@@ -837,7 +858,7 @@ class Localizer:
                 sources = {s["source_id"]: s for s in payload.get("image_sources", [])}
                 observations = part.get("visual_observations", [])
                 if observations and part["evidence_type"] != "mixed":
-                    errs.append(f"part {k + 1}: visual observations with text require evidence_type=mixed")
+                    part["evidence_type"] = cp["evidence_type"] = "mixed"  # visual observations with text are mixed evidence
                 for j, observation in enumerate(observations):
                     source = sources.get(observation["source_id"])
                     if source is None:
@@ -853,15 +874,26 @@ class Localizer:
                     cp["visual_identification_method"] = (cp.get("visual_identification_method", "") + " " + visuals[-1]["method"]).strip()
                     cp["image_date_relevance"] = (cp.get("image_date_relevance", "") + " " + observation["date_relevance"]).strip()
                 compiled.append(cp)
-            if compiled and all(p["geometry_role"] != "event_extent" for p in compiled) and ans["boundary_confidence"] != "unknown":
-                errs.append("a result with locations/context/search areas only requires unknown boundary_confidence")
+            if errs:
+                raise ValueError("; ".join(errs))
+            if all(p["geometry_role"] != "event_extent" for p in compiled) and ans["boundary_confidence"] != "unknown":
+                adjusted.append("boundary_confidence set to unknown: the result has only locations, context or search areas")
+                ans["boundary_confidence"] = "unknown"
             rank = {"unknown": 0, "low": 1, "medium": 2, "high": 3}
             for field in ("event_confidence", "location_confidence", "boundary_confidence"):
                 relevant = [p for p in compiled if field != "boundary_confidence" or p["geometry_role"] == "event_extent"]
-                if relevant and rank[ans[field]] > min(rank[p[field]] for p in relevant):
-                    errs.append(f"result {field} cannot exceed the confidence of its supporting parts")
-            if errs:
-                raise ValueError("; ".join(errs))
+                if relevant:
+                    weakest = min((p[field] for p in relevant), key=rank.__getitem__)
+                    if rank[ans[field]] > rank[weakest]:
+                        adjusted.append(f"{field} lowered from {ans[field]} to {weakest}, the weakest supporting part")
+                        ans[field] = weakest
+            if ans["location_confidence"] == "unknown":
+                raise ValueError("located requires a supported location (every part has unknown location_confidence); "
+                                 "otherwise return unresolved")
+            # Keep the stored answer identical to what the code built, so review and corrections see one set of values.
+            for part, cp in zip(ans["parts"], compiled):
+                part.update({key: cp[key] for key in SYNCED_PART_FIELDS})
+            _note_adjustments(ans, adjusted)
 
         name = f"segment_{sid}" + ("_correction" if correction else "")
         ans = self._call(name, SEGMENT_PROMPT, payload,
@@ -1019,28 +1051,31 @@ class Localizer:
                 out.append(f"{c['id']} {c['name']}")
         return out
 
-    def review_call(self) -> dict:
+    def review_call(self, only: list[str] | None = None) -> dict:
+        """Review every segment, or with `only` just those segments, keeping the earlier reviews of the others."""
         import csv
 
         csv.field_size_limit(50_000_000)
         with (self.run.out / "segments_evidence.csv").open(encoding="utf-8-sig", newline="") as f:
             ev = list(csv.DictReader(f))
-        table = [{k: e[k][:500] for k in ("seg_id", "part_id", "part_label", "process", "placement", "is_hypo", "confidence", "rule_5d",
+        table = [{k: e[k][:REVIEW_FIELD_CHARS] for k in ("seg_id", "part_id", "part_label", "process", "placement", "is_hypo", "confidence", "rule_5d",
                                            "area_ha", "geom_basis", "quotations", "reasoning", "alternative_hypotheses")} for e in ev]
         seg_ids = [s["seg_id"] for s in self.run.segments]
         if self.run.config["mode"] == "vision":
-            reviews = []
             for seg in self.run.segments:
                 sid = seg["seg_id"]
+                if only is not None and sid not in only and sid in self.segment_reviews:
+                    continue
                 rows = [r for r in table if r["seg_id"] == sid]
                 payload = {"parts": rows, "frame": self.frame, "placement": self.answers.get(sid),
                            "deterministic_checks": self._consistency_checks(sid, rows),
                            "visuals": self.visuals.get(sid, []),
                            "evidence": self._segment_evidence(sid),
                            "evidence_pages": self._page_view(list(dict.fromkeys(q["page"] for q in self._segment_evidence(sid)))[:4], 5000)}
-                reviews.append(self._call(f"review_{sid}", REVIEW_PROMPT, payload,
+                self.segment_reviews[sid] = self._call(f"review_{sid}", REVIEW_PROMPT, payload,
                     review_schema([sid]), lambda a: None,
-                    source_ids=self.segment_images.get(sid, [])))
+                    source_ids=self.segment_images.get(sid, []))
+            reviews = [self.segment_reviews[s["seg_id"]] for s in self.run.segments if s["seg_id"] in self.segment_reviews]
             issues = [i for r in reviews for i in r["issues"]]
             result = {"status": "revision_required" if issues or any(r["status"] != "pass" for r in reviews) else "pass",
                       "summary": "\n".join(r["summary"] for r in reviews), "issues": issues}
@@ -1135,23 +1170,27 @@ class Localizer:
                 epoch = self.acquisition_epoch
                 for i in review["issues"]:
                     by_seg.setdefault(str(i["segment"]), []).append(i)
+                corrected = []
                 for sid, issues in by_seg.items():
                     seg = next((s for s in self.run.segments if s["seg_id"] == sid), None)
                     if seg is None:
                         continue
                     try:
                         self.segment_call(seg, {"previous_answer": self.answers.get(sid), "review_issues": issues})
+                        corrected.append(sid)
                     except Exception as exc:
                         self.failures[sid] = str(exc)[:500]
                         self._checkpoint()
                         self.log(f"  review correction for segment {sid} failed: {exc}")
-                if epoch != self.acquisition_epoch:
+                refreshed = epoch != self.acquisition_epoch  # new GIS data renumbers candidates: review everything
+                if refreshed:
                     self._process_missing()
                 self.assemble()
                 result = self.build()
                 if not result["errors"]:
                     try:
-                        review = self.review_call()
+                        # Unchanged segments keep their review; a failed correction keeps its open issues.
+                        review = self.review_call(None if refreshed else corrected)
                     except Exception as exc:
                         review_error = f"{type(exc).__name__}: {str(exc)[:300]}"
             out = {"status": "build_errors", "build": result}
