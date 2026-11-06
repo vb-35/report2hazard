@@ -78,11 +78,14 @@ def evaluate_parameter(ev: Evaluator, expr, parameter: dict | None, label: str =
 
         a_lo, a_hi = area(lo), area(hi)
         increasing = a_hi >= a_lo
+        best, it = None, -1  # it + 1 = bisection steps
         if not (min(a_lo, a_hi) <= target <= max(a_lo, a_hi)):
-            raise SpecError(f"{label}: target {target} ha outside the range reachable within bounds {lo}–{hi} "
-                            f"({a_lo:.4f}–{a_hi:.4f} ha); widen 'bounds' or change the method")
-        best = None
-        for it in range(40):
+            # The closest reachable area may still be within tolerance; otherwise the target cannot be fitted.
+            best = min((lo, a_lo), (hi, a_hi), key=lambda va: abs(va[1] - target))
+            if abs(best[1] - target) / target * 100 > tol:
+                raise SpecError(f"{label}: target {target} ha outside the range reachable within bounds {lo}–{hi} "
+                                f"({a_lo:.4f}–{a_hi:.4f} ha); widen 'bounds' or change the method")
+        for it in range(0 if best else 40):
             mid = (lo + hi) / 2
             a = area(mid)
             if best is None or abs(a - target) < abs(best[1] - target):
@@ -98,7 +101,8 @@ def evaluate_parameter(ev: Evaluator, expr, parameter: dict | None, label: str =
         fit = dict(target_ha=target, fitted_ha=round(fitted, 6), parameter_value=round(value, 6), error_pct=round(err, 3),
                    tolerance_pct=tol, within_tolerance=abs(err) <= tol, search_bounds=parameter.get("bounds", [0, 100]),
                    iterations=it + 1, parameter_name=parameter.get("name", ""), unit=parameter.get("unit", ""),
-                   independent_check=False, note="Fitted to the report value; agreement is by construction, not validation.")
+                   independent_check=False, note="Fitted to the report value; agreement is by construction, not validation."
+                   + (f" The closest fit differs {err:+.1f}% from the report area." if abs(err) > 5 else ""))
         if abs(err) > tol:
             raise SpecError(f"{label}: best fit {fitted:.4f} ha differs {err:.2f}% from target {target} ha (> {tol}%)")
         return ev.geom(expr, value), fit

@@ -102,3 +102,21 @@ synced into the answer; review fields no longer cut at 500 characters).
   600 s; under three parallel reports the slowest placement call took 575 s.
 - [x] **Placement parts require at least one quote** in the answer schema (12 rejections, ~50 min on 2026-11-04),
   except when verified report outlines are offered.
+
+### Rerun 2026-11-06 (same five reports, all fixes above)
+
+Runs in `tatzelwurm:~/report2hazard/results/*__2026-11-06_12-0*` (batch files in `~/report2hazard-batch-20261106/`).
+1 h 37 min instead of about 2 h 40 min; 156 calls (was 242), 12 rejected (was 62), 7 open review issues (was 24),
+46 segments located and 4 unresolved (was 45/5). Schnannerbach and Firschnitzbach were delivered.
+
+- [x] **Accept close area fits** (2026-11-06). Schallerbach 15a: the 8 ha fit reached 9.4 ha (17.5% off, above the 5%
+  tolerance); the repair hint then made the model drop the report area for an assumed height, giving 17.6 ha and a
+  rule-5d hypothesis. Fits up to 25% off are now accepted with boundary_confidence low; the hint asks to keep the area.
+- [x] **Rule 5d no longer contradicts the model's is_hypo reason** (2026-11-06). When code raises is_hypo from 0 to 1,
+  the reason is replaced and the model's sentence kept only as a "Code adjustment" note.
+- [ ] **Source discrepancies keep a run in revision.** Seigesbach figure 71's legend says "Ereignis vom 7. und 8. Juni
+  2016"; the report says 7.6.2015. The reviewer flags it on every part citing the figure, but placement cannot fix it.
+  Consider recording such report inconsistencies as notes rather than open issues.
+- [ ] **Real placement misses flagged by review:** Schallerbach 17 (Grieß, Elis and B 188 deposition not mapped),
+  Maierhofgraben 41 (reach ends at hm 24, report says at least hm 28), Seigesbach 6a (contour heights 1500–2500 m read
+  as distances from the mouth).

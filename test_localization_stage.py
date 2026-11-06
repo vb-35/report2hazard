@@ -363,6 +363,36 @@ class LocalizationStageTests(TestCase):
         again = comp.compile_part("1", "1a", dict(assumed, reason_confidence=cp["reason_confidence"]), adjust=True)
         self.assertEqual(again["reason_confidence"], cp["reason_confidence"])
         self.assertEqual(cp["reason_confidence"].count("rule 5d: extent without basis"), 1)
+        # A reason written for is_hypo 0 is replaced, not prefixed, so it cannot contradict the flag; echoes stay stable.
+        cp = comp.compile_part("1", "1a", dict(assumed, reason_is_hypo="is_hypo 0 because the place is named"), adjust=True)
+        self.assertTrue(cp["reason_is_hypo"].startswith("rule 5d: the report gives no extent for this part (parameter is an "
+                                                        "assumption); is_hypo set to 1. Code adjustment: raised from is_hypo 0"))
+        echo = comp.compile_part("1", "1a", dict(assumed, is_hypo=1, reason_is_hypo=cp["reason_is_hypo"]), adjust=True)
+        self.assertEqual(echo["reason_is_hypo"], "rule 5d: the report gives no extent for this part (parameter is an "
+                                                 "assumption); is_hypo set to 1.")
+        kept = comp.compile_part("1", "1a", dict(assumed, is_hypo=1, reason_is_hypo="extent assumed"), adjust=True)
+        self.assertTrue(kept["reason_is_hypo"].endswith("; extent assumed"))
+
+    def test_area_fit_accepts_a_close_fit_and_rejects_a_far_one(self):
+        from shapely.geometry import box
+        from segment_mapping.build import evaluate_parameter
+        from segment_mapping.geom import SpecError
+        from segment_mapping.templates import FIT_ACCEPT_PCT
+
+        class Steps:  # area in ha jumps in steps, so bisection cannot hit every target exactly
+            def geom(self, expr, v=None):
+                return box(0, 0, 100, 100 * (10 if v < 30 else 12))
+
+        def fit(target, tol=FIT_ACCEPT_PCT):
+            return evaluate_parameter(Steps(), {}, {"fit_area_ha": target, "bounds": [0, 60], "tolerance_pct": tol})[1]
+
+        self.assertAlmostEqual(abs(fit(11)["error_pct"]), 9.091, places=2)  # 10 or 12 ha for 11 ha: accepted up to 25%
+        with self.assertRaisesRegex(SpecError, "differs"):
+            fit(11, tol=5)
+        self.assertAlmostEqual(fit(14)["error_pct"], -14.286, places=2)  # above the reachable 12 ha but within 25%
+        self.assertIn("closest fit differs", fit(14)["note"])
+        with self.assertRaisesRegex(SpecError, "outside the range reachable"):
+            fit(20)
 
     def test_stored_answers_match_the_built_parts(self):
         from multi_hazard_pipeline.agents.localization_agent import localize_run

@@ -101,7 +101,8 @@ Rules:
    9 ha between hm 4 and hm 21), set fit_report_area=true on that reach_corridor/valley_floor part: code fits the band
    height to the stated area (modelled, boundary_confidence at most medium, not independent validation). When the area
    covers several parts (main reach and a tributary), fit only the part holding most of it and say so in uncertainty.
-   Never widen limits just to match a reported area.
+   A fit up to 25% from the stated area is accepted with boundary_confidence low; keep the report area rather than
+   replacing it with an assumed height. Never widen limits just to match a reported area.
 6. is_hypo 1 when it is uncertain which place or feature is meant (several candidates, local name not found, inferred
    identity). confidence high only for a feature the report names that matches exactly one candidate; medium when the
    location follows from stationing, named limits or a single match; low for a choice among several candidates,
@@ -745,7 +746,7 @@ class Localizer:
     def segment_call(self, seg: dict, correction: dict | None = None):
         from segment_mapping.build import evaluate_parameter
         from segment_mapping.facts import evidence_bundle
-        from segment_mapping.templates import TemplateError
+        from segment_mapping.templates import FIT_ACCEPT_PCT, FIT_EXACT_PCT, TemplateError
 
         sid = seg["seg_id"]
         evidence = self._segment_evidence(sid)
@@ -822,7 +823,15 @@ class Localizer:
                     errs.append(f"part {k + 1}: " + "; ".join(far) + "; use mouth, source, confluence or candidate points on the tributary")
                     continue
                 try:
-                    g, _ = evaluate_parameter(self.evaluator, cp["geometry"], cp["parameter"], label=pid)
+                    g, fit = evaluate_parameter(self.evaluator, cp["geometry"], cp["parameter"], label=pid)
+                    if fit and abs(fit["error_pct"]) > FIT_EXACT_PCT and cp["boundary_confidence"] in ("medium", "high"):
+                        # A loose fit to the report area is kept, but its boundary is not better than low.
+                        note = (f"boundary_confidence lowered to low: the closest fit ({fit['fitted_ha']:.2f} ha) differs "
+                                f"{fit['error_pct']:+.1f}% from the report area ({fit['target_ha']} ha)")
+                        cp["boundary_confidence"] = "low"
+                        reason = cp["reason_confidence"].rstrip().rstrip(".")
+                        cp["reason_confidence"] = (reason + ("; " if " Code adjustment:" in reason else " Code adjustment: ")
+                                                   + note + ".").strip()
                     if g.is_empty:
                         errs.append(f"part {k + 1}: the geometry is empty (check points/limits or choose another method)")
                     elif g.geom_type not in ("Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon") or not g.is_valid:
@@ -838,9 +847,10 @@ class Localizer:
                 except Exception as exc:
                     msg = str(exc)[:300]
                     if "outside the range reachable" in msg:
-                        msg += (" -> the report area does not fit inside the chosen limits: increase args.max_dist_m (corridor "
-                                "half-width) or widen the upstream/downstream limits; if it still cannot fit, set report_area_ha to "
-                                "null, give a height value with basis 'assumption', and compare with the report area in uncertainty")
+                        msg += (f" -> even the closest fit is more than {FIT_ACCEPT_PCT:.0f}% from the report area: increase "
+                                "args.max_dist_m (corridor half-width), or check that the limits are the ones the report gives for this "
+                                "area; only if it cannot, set report_area_ha to null, give a height value with basis "
+                                "'assumption' (rule 5d: a low-confidence hypothesis), and compare with the report area in uncertainty")
                     errs.append(f"part {k + 1}: geometry failed: {msg}")
                 for q in cp["quotes"]:
                     e = self._verify_quote(q.get("pdf_page"), q["text"])

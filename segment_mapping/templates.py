@@ -30,7 +30,11 @@ METHODS = {
     "point_area": "Last resort: circle around a located point (args.center), parameter = radius_m. Placement 'hypothesis'.",
     "expression": "Raw toolkit geometry expression (args.expression as JSON text) when nothing else fits. Explain why.",
 }
-PARAMS = {"reach_corridor": ("height_above_channel_m", 3.0, (0.5, 1.5)), "valley_floor": ("height_above_channel_m", 3.0, (0.5, 1.5)),
+# Area fits to a report value: within FIT_EXACT_PCT the fit keeps the model's boundary confidence; up to FIT_ACCEPT_PCT it
+# is accepted with low boundary confidence; beyond that the method or limits must change.
+FIT_EXACT_PCT = 5.0
+FIT_ACCEPT_PCT = 25.0
+PARAMS = {"reach_corridor":("height_above_channel_m", 3.0, (0.5, 1.5)), "valley_floor": ("height_above_channel_m", 3.0, (0.5, 1.5)),
           "feature": ("width_m", 6.0, (0.75, 1.25)), "road_stretch": ("width_m", 6.0, (0.75, 1.25)),
           "point_area": ("radius_m", 30.0, (0.5, 2.0))}
 ARG_KEYS = ["candidate", "stream", "river", "from_point", "to_point", "upstream", "downstream", "center", "side",
@@ -177,7 +181,10 @@ class Compiler:
         if uses_param:
             name, default, (lo, hi) = PARAMS[m]
             if report_area and par.get("fit_report_area", False) and m in ("reach_corridor", "valley_floor"):
-                parameter = {"name": name, "unit": "m", "fit_area_ha": float(report_area), "bounds": [0, 60]}
+                # Accept the closest fit up to 25% from the report area (boundary confidence then low, see FIT_EXACT_PCT)
+                # rather than pushing the model to drop the report value for an assumed height (rule 5d).
+                parameter = {"name": name, "unit": "m", "fit_area_ha": float(report_area), "bounds": [0, 60],
+                             "tolerance_pct": FIT_ACCEPT_PCT}
             else:
                 v = par.get("value")
                 if v is None or v <= 0:
@@ -193,8 +200,13 @@ class Compiler:
         reasons = {key: re.sub(r"^rule 5d: [^;]*; ", "", str(ans.get(key, "")).split(" Code adjustment:")[0]).strip()
                    for key in ("reason_is_hypo", "reason_confidence")}
         if rule5d:
+            # A reason written for is_hypo 0 would contradict the flag: replace it and keep it only as a note.
+            given = reasons["reason_is_hypo"]
+            reason_is_hypo = "rule 5d: the report gives no extent for this part (parameter is an assumption); " + (
+                "is_hypo set to 1." + (f" Code adjustment: raised from is_hypo 0, whose reason was: {given}" if given else "")
+                if is_hypo == 0 else given)
             is_hypo, conf = 1, "low"
-            reasons = dict(reason_is_hypo="rule 5d: the report gives no extent for this part (parameter is an assumption); " + reasons["reason_is_hypo"],
+            reasons = dict(reason_is_hypo=reason_is_hypo,
                            reason_confidence="rule 5d: extent without basis in the report; " + reasons["reason_confidence"])
         if m == "point_area":
             is_hypo, conf = 1, "low"
