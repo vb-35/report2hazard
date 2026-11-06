@@ -30,7 +30,7 @@ def main():
             args = dict(system_prompt="test", user_payload={}, response_schema=None)
             assert "reasoning_effort" not in json.loads(normal._request_body(**args))
             default_payload = json.loads(medium._request_body(**args))
-            assert default_payload["model"] == "Inferact/Qwen3.8-27B-NVFP4"
+            assert default_payload["model"] == "nvidia/Qwen3.8-27B-NVFP4"
             assert default_payload["reasoning_effort"] == "medium"
             assert medium.config.timeout_seconds == 660
             from io import BytesIO

@@ -92,7 +92,7 @@ class LLMConfig:
     api_base_url: str = field(default_factory=api_base_url_from_env)
     text_endpoint: str = "/chat/completions"
     api_key_env_var: str = "TW_LLM_API_KEY"
-    model: str = "Inferact/Qwen3.8-27B-NVFP4"
+    model: str = "nvidia/Qwen3.8-27B-NVFP4"
     retries: int = 3
     temperature: float = 0.0
     reasoning_effort: str | None = "medium"
