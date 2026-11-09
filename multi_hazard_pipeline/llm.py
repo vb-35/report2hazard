@@ -177,6 +177,8 @@ class ChatClient:
             segment_rows = user_payload["candidate_report"].get("rows", [])
         chunk_sizes = [len(chunk.get("text", "")) for chunk in chunks]
         for attempt in range(1, max_attempts + 1):
+            # Lets a validator relax an optional check on the final attempt instead of failing the whole call.
+            self.attempt, self.max_attempts = attempt, max_attempts
             started = perf_counter()
             # What this attempt sends: a repair carries the previous failed answer and its error.
             sent_repair = repair["kind"] if repair else None

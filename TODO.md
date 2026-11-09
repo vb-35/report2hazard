@@ -114,6 +114,10 @@ Runs in `tatzelwurm:~/report2hazard/results/*__2026-11-06_12-0*` (batch files in
   rule-5d hypothesis. Fits up to 25% off are now accepted with boundary_confidence low; the hint asks to keep the area.
 - [x] **Rule 5d no longer contradicts the model's is_hypo reason** (2026-11-06). When code raises is_hypo from 0 to 1,
   the reason is replaced and the model's sentence kept only as a "Code adjustment" note.
+- [x] **A misquoted station anchor no longer fails the report** (2026-11-09). Seigesbach (rerun 2026-11-06 16:00)
+  failed in the frame call: the model wrote "linksufriger Zuflinger bei hm 18,3" three times for the report's
+  "Zubrin- ger". Quote errors now show the closest report wording, and an anchor whose quote still fails on the
+  last attempt is dropped with a note instead of failing the run.
 - [ ] **Source discrepancies keep a run in revision.** Seigesbach figure 71's legend says "Ereignis vom 7. und 8. Juni
   2016"; the report says 7.6.2015. The reviewer flags it on every part citing the figure, but placement cannot fix it.
   Consider recording such report inconsistencies as notes rather than open issues.

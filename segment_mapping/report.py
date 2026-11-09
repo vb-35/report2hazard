@@ -294,6 +294,34 @@ def _page_views(run: Run):
     return cache
 
 
+def closest_passage(run: Run, text: str, pdf_page: int | None = None, min_ratio: float = 0.6) -> dict | None:
+    """The report passage most similar to an unverified quotation (word windows of about its length), so a repair
+    request can show the model what the report actually says. None when nothing is similar enough."""
+    from difflib import SequenceMatcher
+
+    want = _soft(_normalize(text)).split()
+    if not want:
+        return None
+    n, best = len(want), None
+    target = " ".join(want).casefold()
+    for p, *_ in _page_views(run):
+        if pdf_page and p["pdf_page"] != int(pdf_page):
+            continue
+        words = _soft(_normalize(p["text"])).split()
+        matcher = SequenceMatcher(autojunk=False)
+        matcher.set_seq2(target)
+        for size in {max(1, n - 1), n, n + 1}:
+            for i in range(max(1, len(words) - size + 1)):
+                window = " ".join(words[i:i + size])
+                matcher.set_seq1(window.casefold())
+                if matcher.real_quick_ratio() < min_ratio or matcher.quick_ratio() < min_ratio:
+                    continue
+                ratio = matcher.ratio()
+                if ratio >= min_ratio and (best is None or ratio > best["ratio"]):
+                    best = dict(text=window, pdf_page=p["pdf_page"], ratio=round(ratio, 3))
+    return best
+
+
 def resolve_quote(run: Run, q: dict | str) -> dict:
     """Locate a quotation in the report text.
 

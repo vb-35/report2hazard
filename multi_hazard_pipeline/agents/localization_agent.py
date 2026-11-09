@@ -577,11 +577,14 @@ class Localizer:
                      original=by[n]["text"][:chars]) for n in numbers if n in by]
 
     def _verify_quote(self, page, text) -> str | None:
-        from segment_mapping.report import resolve_quote
+        from segment_mapping.report import closest_passage, resolve_quote
 
         q = resolve_quote(self.run, {"text": text, "pdf_page": page} if page else {"text": text})
         if not q["verified"]:
-            return f"quote not found in the report text (page {page}): {text[:70]!r}; copy it exactly from the 'original' text"
+            near = closest_passage(self.run, text, page) or (closest_passage(self.run, text) if page else None)
+            hint = (f"; the closest report text (page {near['pdf_page']}) is: {near['text'][:300]!r}: copy that wording"
+                    if near else "")
+            return f"quote not found in the report text (page {page}): {text[:70]!r}; copy it exactly from the 'original' text{hint}"
         if not q.get("page_hint_ok", True):
             return f"quote belongs to text page {q['pdf_page']}, not {page}; use its localization text-page ID"
         return None
@@ -669,8 +672,13 @@ class Localizer:
             "point_tokens": "mouth | confluence:S# | <candidate id>",
         }
 
+        def final_attempt() -> bool:
+            attempt, limit = getattr(self.client, "attempt", None), getattr(self.client, "max_attempts", None)
+            return isinstance(attempt, int) and isinstance(limit, int) and attempt >= limit
+
         def validate(ans):
             errs = []
+            dropped = []  # anchors whose quote still fails on the last attempt: a missing anchor beats a failed report
             for f in ans.get("named_features", []):
                 if f["certainty"] != "not_found" and not f.get("candidate"):
                     errs.append(f"named feature {f['report_name']!r}: candidate required unless certainty is not_found")
@@ -692,10 +700,18 @@ class Localizer:
                     continue
                 if pt != "mouth" and a.get("quote"):
                     e = self._verify_quote(a.get("page"), a["quote"])
-                    if e:
+                    if e and final_attempt():
+                        dropped.append(a)
+                    elif e:
                         errs.append("anchor " + e)
             if errs:
                 raise ValueError("; ".join(errs))
+            if dropped:
+                ans["chainage_anchors"] = [a for a in ans["chainage_anchors"] if a not in dropped]
+                note = "; ".join(f"anchor hm {a['value']} ({a['point']}) dropped: its quote was not found in the report text"
+                                 for a in dropped)
+                ans["notes"] = (str(ans.get("notes", "")).rstrip() + " Code adjustment: " + note + ".").strip()
+                self.log(f"  frame: {note}")
             comp = Compiler(self.facts, ans, self.run.config["package"]["layers"], chainage=bool(ans.get("chainage_anchors")),
                             figure_candidates=self.figure_candidates)
             spec = {"refs": comp.refs(), "chainages": comp.chainages()}

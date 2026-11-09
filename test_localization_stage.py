@@ -295,6 +295,38 @@ class LocalizationStageTests(TestCase):
         with self.assertRaisesRegex(ValueError, "was not attached"):
             localizer.segment_call(localizer.run.segments[0])
 
+    def test_misquoted_anchor_gets_the_report_wording_then_is_dropped_on_the_last_attempt(self):
+        from multi_hazard_pipeline.agents.localization_agent import Localizer
+
+        class Misquoting(FakeModel):
+            attempt, max_attempts = 1, 3
+
+            def complete_json(self, **kwargs):
+                validate = kwargs.pop("validate")
+                answer = super().complete_json(validate=lambda a: None, **kwargs)
+                if kwargs["response_schema"]["name"] == "localization_frame":
+                    answer["chainage_anchors"].append({"value": 4, "point": self.bridge, "page": 2,
+                                                       "quote": "erreichte die Testbrücke bei hm 4 und zerstörte das Gelinder"})
+                    self.errors = []
+                    for self.attempt in (1, 2, 3):
+                        try:
+                            validate(answer)
+                            break
+                        except ValueError as exc:
+                            self.errors.append(str(exc))
+                return answer
+
+        model = Misquoting()
+        localizer = Localizer(self.pipe, self.pkg, model, log=lambda m: None)
+        localizer.prepare()
+        localizer.build_facts()
+        localizer.frame_call()
+        self.assertEqual(len(model.errors), 2)
+        self.assertIn("the closest report text (page 2) is: 'erreichte die Testbrücke bei hm 4 und zerstörte das Geländer.'",
+                      model.errors[0])
+        self.assertEqual([a["point"] for a in localizer.frame["chainage_anchors"]], ["mouth"])
+        self.assertIn("Code adjustment: anchor hm 4", localizer.frame["notes"])
+
     def test_unapproved_run_is_refused(self):
         from multi_hazard_pipeline.agents.localization_agent import localize_run
         from multi_hazard_pipeline.errors import PipelineError
