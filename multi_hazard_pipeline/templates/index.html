@@ -58,9 +58,9 @@
     {% for run in runs %}
     <article class="run-item state-{{ run.status }}">
     <a class="run-card" href="{{ run.url or url_for('run_detail', run_id=run.run_id) }}">
-      <span class="run-card__main"><strong>{% if run.kind == 'localization' %}<span class="kind-tag">Localization test</span> {% endif %}{{ run.title }}</strong><span class="run-activity">{{ run.activity }}{% if run.kind == 'localization' and run.subtitle %} · {{ run.subtitle }}{% endif %}</span></span>
-      <span class="run-card__meta"><span class="badges"><span class="badge">{{ run.status_label }}</span>{% if run.localization %}<span class="badge badge-map">Map: {{ run.localization | replace('_', ' ') }}</span>{% endif %}</span>{% if run.kind != 'localization' %}<span class="progress-value">{{ run.progress }}%</span>{% endif %}</span>
-      <span class="run-card__foot"><small>{% if run.kind == 'localization' %}Localization test{% elif run.collection %}Collection · {{ run.report_count }} report(s){% else %}Single report{% endif %}</small><code>{{ run.run_id }}</code></span>
+      <span class="run-card__main"><strong>{% if run.kind == 'localization' %}<span class="kind-tag">Localization test</span> {% elif run.kind == 'agent' %}<span class="kind-tag">Agent run</span> {% endif %}{{ run.title }}</strong><span class="run-activity">{{ run.activity }}{% if run.kind in ['localization', 'agent'] and run.subtitle %} · {{ run.subtitle }}{% endif %}</span></span>
+      <span class="run-card__meta"><span class="badges"><span class="badge">{{ run.status_label }}</span>{% if run.localization %}<span class="badge badge-map">Map: {{ run.localization | replace('_', ' ') }}</span>{% endif %}</span>{% if run.kind not in ['localization', 'agent'] %}<span class="progress-value">{{ run.progress }}%</span>{% endif %}</span>
+      <span class="run-card__foot"><small>{% if run.kind == 'localization' %}Localization test{% elif run.kind == 'agent' %}Agent localization{% elif run.collection %}Collection · {{ run.report_count }} report(s){% else %}Single report{% endif %}</small><code>{{ run.run_id }}</code></span>
     </a>
     {% set busy = run.status in ['running', 'queued'] %}
     <button type="button" class="delete-run quiet-danger" data-url="{{ url_for('delete_run', run_id=run.run_id) }}"

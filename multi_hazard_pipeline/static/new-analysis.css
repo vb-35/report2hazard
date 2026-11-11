@@ -42,3 +42,31 @@
 @media (prefers-reduced-motion: reduce) { .index-page *, .index-page *::before, .index-page *::after { transition-duration: .01ms !important; } }
 
 @media (max-width: 720px) { .index-page .site-header__inner { width: calc(100% - 32px); } }
+
+/* Pages built on the Reports layout: localization test, localization run, comparison, agent import. */
+.index-page .back-link { display: inline-block; margin: 0 0 18px var(--index-text-inset); color: var(--na-muted); font-size: 13px; text-decoration: none; }
+.index-page .back-link:hover { color: var(--na-ink); }
+.index-page .page-section { margin: 0 0 16px; }
+.index-page .page-section h2 { font-size: 17px; }
+.index-page .form-section > h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.index-page .step-number { width: 26px; height: 26px; border: 1px solid var(--na-accent); background: #f7f8ff; color: var(--na-accent); font-size: 12px; font-weight: 650; }
+.index-page .page-section > .hint { margin-bottom: 16px; color: var(--na-muted); font-size: 13px; }
+.index-page .page-section .upload-panel__heading { align-items: center; margin-bottom: 16px; }
+.index-page .page-section .section-heading { padding-bottom: 14px; margin-bottom: 16px; border-bottom: 1px solid var(--na-line); }
+.index-page .page-section .upload-zone { min-height: 120px; }
+.index-page .page-section details > summary { padding: 10px 0; font-size: 13px; font-weight: 550; cursor: pointer; }
+.index-page .button.secondary, .index-page button.secondary { display: inline-flex; align-items: center; border-color: var(--na-line); background: #fff; color: var(--na-ink); text-decoration: none; }
+.index-page .button.secondary:hover { border-color: var(--na-ink); }
+.index-page .workflow-card.is-active { border-color: var(--na-accent); background: #f7f8ff; box-shadow: 0 0 0 1px var(--na-accent); }
+.index-page .import-results { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.index-page .import-result { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 10px 12px; border: 1px solid var(--na-line); border-radius: 8px; background: #fff; }
+.index-page .import-result--imported .badge { background: #ebfbee; color: #2b8a3e; }
+.index-page .import-result--failed { border-color: #edc9c9; background: #fffafa; }
+.index-page .import-result--failed .badge { background: #fff5f5; color: #c92a2a; }
+.index-page .import-detail { flex-basis: 100%; color: var(--na-muted); font-size: 13px; }
+.index-page .import-links { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+.index-page .terrain3d-tools { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; margin-bottom: 8px; }
+.index-page .terrain3d-tools label { display: grid; gap: 4px; font-size: 12px; color: var(--na-muted); }
+.index-page .terrain3d-tools label.checkbox { display: inline-flex; align-items: center; gap: 6px; }
+.index-page .terrain3d-tools select { min-width: 200px; }
+.index-page .terrain3d-box { border: 1px solid var(--na-line); border-radius: 8px; overflow: hidden; }

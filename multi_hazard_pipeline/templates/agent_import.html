@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Import runs · Multi-hazard review{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">{% endblock %}
+{% block body_class %}index-page{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('compare_localizations', report=report) }}">← Compare localizations</a>
+<header class="analysis-heading">
+  <p class="eyebrow">Localization comparison</p>
+  <h1>Import runs</h1>
+  <p>Import a zip of localization runs to compare them: a bundle downloaded from Compare (pipeline and agent runs of one
+  or more reports), or the output folders of one or several agent runs.</p>
+</header>
+<ol class="workflow-strip" aria-label="Import steps">
+  <li class="is-active"><span>1</span><strong>Zip of runs</strong></li>
+  <li><span>2</span><strong>Report and model</strong></li>
+  <li><span>3</span><strong>Compare</strong></li>
+</ol>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+{% if outcomes %}
+<section class="panel upload-panel page-section" aria-labelledby="result-heading">
+<div class="upload-panel__heading"><h2 id="result-heading">Import result</h2>
+<p>{{ outcomes|selectattr('status', 'equalto', 'imported')|list|length }} imported ·
+{{ outcomes|selectattr('status', 'equalto', 'skipped')|list|length }} already here ·
+{{ outcomes|selectattr('status', 'equalto', 'failed')|list|length }} failed</p></div>
+<ul class="import-results">
+{% for item in outcomes %}
+<li class="import-result import-result--{{ item.status }}"><span class="badge">{{ {'imported': 'Imported', 'skipped': 'Already here', 'failed': 'Failed'}[item.status] }}</span>
+<strong>{{ item.label }}</strong> <span class="hint">{{ 'Pipeline run' if item.kind == 'pipeline' else 'Agent run' }}</span>
+{% if item.detail %}<span class="import-detail">{{ item.detail }}</span>{% endif %}</li>
+{% endfor %}
+</ul>
+{% if imported_reports %}<div class="form-submit"><span></span><span class="import-links">
+{% for signature, event in imported_reports.items() %}<a class="button" href="{{ url_for('compare_localizations', report=signature) }}">Compare {{ event }} →</a> {% endfor %}
+</span></div>{% endif %}
+</section>
+{% endif %}
+<form method="post" action="{{ url_for('save_agent_localization') }}" enctype="multipart/form-data">
+<section class="panel upload-panel page-section form-section" aria-labelledby="files-heading">
+<h2 id="files-heading"><span class="step-number">1</span>Zip of runs</h2>
+<p class="hint">A bundle from Compare → Download these runs imports as it is: it names each run's report and model and
+brings the report's segments and GIS context with it. Runs that are already here are skipped.{% if error %} Select the zip again after an error.{% endif %}</p>
+<label class="upload-zone">Choose the zip<input type="file" name="outputs" accept=".zip" required></label>
+<details><summary>What an agent run folder must contain</summary>
+<ul class="hint">
+<li><code>placements.gpkg</code> with a layer <code>parts</code>: one feature per mapped part with <code>seg_id</code>, <code>part_id</code>, <code>label</code>,
+<code>geometry_role</code> (event_extent, location or search_area), <code>is_hypo</code>, <code>event_confidence</code>, <code>location_confidence</code>,
+<code>boundary_confidence</code>, <code>method</code>, <code>area_ha</code>, <code>report_area_ha</code></li>
+<li><code>segment_results.csv</code>: <code>seg_id</code>, <code>status</code> (located or unresolved), <code>parts</code>, <code>reason</code></li>
+<li><code>segments_evidence.csv</code>: <code>seg_id</code>, <code>part_id</code>, <code>quotes</code>, <code>reasoning</code>, <code>uncertainty</code>, <code>alternatives</code></li>
+<li>optional: <code>report.md</code>, <code>segments_map.html</code></li>
+</ul>
+<p class="hint">A zip of several runs holds one such folder per run; the folder name becomes the model name.</p></details>
+</section>
+<section class="panel upload-panel page-section form-section" aria-labelledby="report-heading">
+<h2 id="report-heading"><span class="step-number">2</span>Report and model</h2>
+<p class="hint">Only needed for agent output folders; a bundle already says this for every run.</p>
+<label>Report the agent runs localized
+<select name="report">
+<option value="">From the bundle</option>
+{% for g in groups %}<option value="{{ g.signature }}" {% if g.signature == report %}selected{% endif %}>{{ g.event or 'Unnamed report' }} · {{ g.segments }} segments · {{ g.runs|length }} run{{ '' if g.runs|length == 1 else 's' }}</option>{% endfor %}
+</select></label>
+<label>Model and settings (for a single run)<input name="model" value="{{ form.get('model', '') }}" placeholder="Claude Opus 5.5 · medium"></label>
+</section>
+<div class="form-submit"><span></span><button type="submit">Import the runs <span aria-hidden="true">→</span></button></div>
+</form>
+{% endblock %}

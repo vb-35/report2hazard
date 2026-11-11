@@ -1,6 +1,7 @@
 """Local interface for the post-approval localization pipeline and standalone localization tests."""
 from __future__ import annotations
 
+import io
 import re
 import shutil
 from pathlib import Path
@@ -182,9 +183,14 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
             abort(404)
         state = data(run_dir)
         settings = state["info"].get("settings") or {"package": state["info"].get("package", "")}
+        from .localization_compare import dem_file
+
+        # The 3D view needs the run's map outputs and the elevation model it was localized on.
+        has_3d = (run_dir / "localization" / "outputs" / "segments.geojson").is_file() and dem_file(run_dir) is not None
         return render_template("localization.html", manifest=manifest, state=state, settings=settings,
                                test=state["provided"], show_table=True, default_model=config.llm.model, error=error,
-                               existing=(run_dir / "localization").exists())
+                               existing=(run_dir / "localization").exists(),
+                               terrain_url=url_for("localization_terrain", runs=[run_id]) if has_3d else None)
 
     @app.get("/runs/<run_id>/localization/status")
     def localization_status(run_id):
@@ -302,6 +308,100 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
                     shutil.rmtree(folder, ignore_errors=True)
             return new_form(str(exc), 409 if run_dir else 400)
         return redirect(url_for("localization_detail", run_id=run_dir.name), code=303)
+
+    @app.get("/localization/compare")
+    def compare_localizations():
+        from .localization_compare import MAX_COMPARED, comparable_groups
+
+        groups = comparable_groups(root)
+        requested = request.args.getlist("runs")
+        chosen = request.args.get("report") or next(
+            (g["signature"] for g in groups if any(run["run_id"] in requested for run in g["runs"])), None)
+        group = next((g for g in groups if g["signature"] == chosen), groups[0] if groups else None)
+        ids = [run["run_id"] for run in group["runs"]] if group else []
+        # Every run of the report is shown unless the page was asked for some of them.
+        selected = [run_id for run_id in requested if run_id in ids] or ids[:MAX_COMPARED]
+        data_url = url_for("compare_localizations_data", runs=selected) if selected else None
+        terrain_url = url_for("localization_terrain", runs=selected) if selected else None
+        return render_template("compare.html", groups=groups, group=group, selected=selected, data_url=data_url,
+                               terrain_url=terrain_url)
+
+    @app.get("/localization/compare/data")
+    def compare_localizations_data():
+        from .localization_compare import comparison_data
+
+        try:
+            response = jsonify(comparison_data(root, request.args.getlist("runs")))
+        except PipelineError as exc:
+            return jsonify(error=str(exc)), 400
+        except Exception as exc:  # noqa: BLE001 - unreadable outputs are reported on the page, not as a crash
+            return jsonify(error=f"The runs could not be read: {type(exc).__name__}: {exc}"), 500
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    def import_form(error=None, status=200, outcomes=None):
+        from .localization_compare import comparable_groups
+
+        groups = comparable_groups(root)
+        reports = {}  # where each imported run can now be compared
+        for group in groups:
+            if outcomes and any(item["run_id"] in {run["run_id"] for run in group["runs"]} for item in outcomes):
+                reports[group["signature"]] = group["event"]
+        return render_template("agent_import.html", groups=groups, form=request.form, outcomes=outcomes,
+                               imported_reports=reports, error=error,
+                               report=request.form.get("report") or request.args.get("report")), status
+
+    @app.get("/localization/import")
+    def import_agent_localization():
+        return import_form()
+
+    @app.post("/localization/import")
+    def save_agent_localization():
+        from .localization_compare import BUNDLE_MAX_BYTES, import_runs
+
+        request.max_content_length = BUNDLE_MAX_BYTES  # bundles carry pipeline runs with their GIS context
+        upload = request.files.get("outputs")
+        try:
+            if not upload or not upload.filename:
+                raise PipelineError("Choose the zip of runs to import.")
+            outcomes = import_runs(root, upload.read(), filename=upload.filename,
+                                   report=request.form.get("report", "").strip() or None,
+                                   model=request.form.get("model", "").strip() or None)
+        except PipelineError as exc:
+            return import_form(str(exc), 400)
+        failed = all(item["status"] == "failed" for item in outcomes)
+        return import_form(outcomes=outcomes, status=400 if failed else 200)
+
+    @app.get("/localization/terrain")
+    def localization_terrain():
+        from .localization_compare import terrain_data
+
+        try:
+            response = jsonify(terrain_data(root, request.args.getlist("runs")))
+        except PipelineError as exc:
+            return jsonify(error=str(exc)), 400
+        except Exception as exc:  # noqa: BLE001 - shown in the 3D panel instead of a crash
+            return jsonify(error=f"The 3D view could not be built: {type(exc).__name__}: {exc}"), 500
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get("/localization/compare/download")
+    def download_localizations():
+        from .localization_compare import export_runs
+
+        try:
+            data, name = export_runs(root, request.args.getlist("runs"))
+        except PipelineError as exc:
+            abort(400, str(exc))
+        return send_file(io.BytesIO(data), mimetype="application/zip", as_attachment=True, download_name=name)
+
+    @app.get("/vendor/leaflet/<filename>")
+    def leaflet_file(filename):
+        # The map library ships with segment_mapping, so the comparison works without a CDN.
+        if filename not in ("leaflet.js", "leaflet.css"):
+            abort(404)
+        folder = Path(__file__).resolve().parent.parent / "segment_mapping" / "vendor" / "leaflet"
+        return send_file(folder / filename, max_age=3600)
 
     @app.get("/runs/<run_id>/localization/output/<artifact>")
     def localization_output(run_id, artifact):

@@ -271,7 +271,7 @@ class ProvidedLocalizationTests(TestCase):
     def test_form_and_navigation(self):
         page = self.client.get("/localization/new")
         self.assertEqual(page.status_code, 200)
-        for text in (b"Map your own segments", b"Separate GIS files", b"Spatial package JSON", b"Translate the report"):
+        for text in (b"<h1>Localization test</h1>", b"Separate GIS files", b"Spatial package JSON", b"Translate the report"):
             self.assertIn(text, page.data)
         self.assertIn(b"/localization/new", self.client.get("/").data)
 

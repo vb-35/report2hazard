@@ -318,6 +318,16 @@ def _list_runs(root: Path) -> list[dict[str, Any]]:
                 "subtitle": _title(manifest), "created_at": manifest.get("created_at", ""),
                 "url": url_for("localization_detail", run_id=manifest.get("run_id")),
             })
+        elif manifest.get("kind") == "agent_localization":
+            agent = manifest.get("agent") or {}
+            runs.append({
+                "run_id": manifest.get("run_id"), "title": f"{manifest.get('event') or 'Report'} · {agent.get('model', 'agent')}",
+                "collection": False, "kind": "agent", "status": "imported", "status_label": "Imported agent run",
+                "activity": "Opens this run in Compare; tick other runs of the report to compare", "subtitle": agent.get("source", ""),
+                "created_at": manifest.get("created_at", ""),
+                "url": url_for("compare_localizations", report=agent["signature"], runs=[manifest.get("run_id")])
+                       if agent.get("signature") else url_for("compare_localizations", runs=[manifest.get("run_id")]),
+            })
         else:
             status = _display_status(manifest)
             localization = (manifest.get("localization") or {}).get("status")

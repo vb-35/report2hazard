@@ -1,14 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Localization test · Multi-hazard review{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">{% endblock %}
+{% block body_class %}index-page{% endblock %}
 {% block content %}
-<div class="hero"><p class="eyebrow">LOCALIZATION TEST</p>
-<h1>Map your own segments.</h1>
-<p>Run only the localization pipeline with a segment table and GIS data you provide. Extraction and human review are skipped, and your segment table is used exactly as supplied.</p></div>
-<ol class="steps"><li><strong>1. Report</strong><span>Evidence for quotes, page references and images</span></li><li><strong>2. Segments</strong><span>Your table of segments for one event</span></li><li><strong>3. Spatial data</strong><span>A spatial package or separate GIS files</span></li></ol>
+<header class="analysis-heading">
+  <p class="eyebrow">Localization only</p>
+  <h1>Localization test</h1>
+  <p>Run only the localization pipeline with a segment table and GIS data you provide. Extraction and human review are skipped, and your segment table is used exactly as supplied.</p>
+</header>
+<ol class="workflow-strip" aria-label="Localization test steps">
+  <li class="is-active"><span>1</span><strong>Report</strong></li>
+  <li><span>2</span><strong>Segments</strong></li>
+  <li><span>3</span><strong>Spatial data</strong></li>
+  <li><span>4</span><strong>Settings</strong></li>
+</ol>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
 {% set spatial = form.get('spatial_source', 'package') %}
 <form id="provided-form" method="post" action="{{ url_for('start_provided_localization') }}" enctype="multipart/form-data">
-<section class="panel form-section" aria-labelledby="report-heading">
+<section class="panel upload-panel page-section form-section" aria-labelledby="report-heading">
 <h2 id="report-heading"><span class="step-number">1</span>Report</h2>
 <p class="hint">The report is read for evidence only.{% if error %} Uploaded files must be selected again after an error.{% endif %}</p>
 <label class="upload-zone">Choose the report files
@@ -18,7 +27,7 @@
 <label>Report file or folder<input name="report_path" value="{{ form.get('report_path', '') }}" placeholder="C:\data\Seigesbach\report.pdf"></label>
 </details>
 </section>
-<section class="panel form-section" aria-labelledby="table-heading">
+<section class="panel upload-panel page-section form-section" aria-labelledby="table-heading">
 <h2 id="table-heading"><span class="step-number">2</span>Segment table</h2>
 <p class="hint">Tab-separated (.tsv), comma-separated (.csv) or .txt with a header row. It needs a segment ID column and a process column; event, category, interaction type and sediment transport phase columns are used when present. In Excel, save the sheet as “Text (Tab delimited)”.</p>
 <div class="field-pair">
@@ -28,7 +37,7 @@
 </div>
 <label>Event<input name="event" value="{{ form.get('event', '') }}" placeholder="Required only when the table lists several events"></label>
 </section>
-<section class="panel form-section" aria-labelledby="spatial-heading">
+<section class="panel upload-panel page-section form-section" aria-labelledby="spatial-heading">
 <h2 id="spatial-heading"><span class="step-number">3</span>Spatial data</h2>
 <fieldset class="report-mode"><legend>How do you provide the GIS data?</legend>
 <label class="choice"><input type="radio" name="spatial_source" value="package" {% if spatial == 'package' %}checked{% endif %}>
@@ -57,7 +66,7 @@
 <label>Local CRS<input name="crs" value="{{ form.get('crs', '') }}" placeholder="Detected from the catchment or DEM, e.g. EPSG:31254"></label>
 </fieldset>
 </section>
-<section class="panel form-section" aria-labelledby="settings-heading">
+<section class="panel upload-panel page-section form-section" aria-labelledby="settings-heading">
 <h2 id="settings-heading"><span class="step-number">4</span>Settings</h2>
 <label class="checkbox"><input type="checkbox" name="translate" {% if not form or form.get('translate') %}checked{% endif %}>Translate the report text to English first (one extra model step)</label>
 {% include "_localization_options.html" %}

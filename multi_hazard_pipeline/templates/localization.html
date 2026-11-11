@@ -1,17 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Localization · {{ test.event if test else manifest.run_id }}{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='compare.css') }}">
+{% if terrain_url %}<script type="importmap">{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>{% endif %}{% endblock %}
+{% block body_class %}index-page{% endblock %}
 {% block content %}
-{% if test %}<a href="{{ url_for('index') }}">← All reports and tests</a>
-{% else %}<a href="{{ url_for('run_detail', run_id=manifest.run_id) }}">← Back to report review</a>{% endif %}
-<div class="hero"><p class="eyebrow">{{ 'LOCALIZATION TEST' if test else 'SPATIAL LOCALIZATION' }}</p>
-<h1>{{ test.event if test else 'Place the approved segments.' }}</h1>
-{% if test %}<p>Localization with your own segment table and spatial data. Extraction and human review were not run.</p>
-{% else %}<p>{{ manifest.inputs | map(attribute='filename') | join(', ') }}</p>
-<p>Combine report evidence with a local GIS package, then inspect the map, uncertainties, and spatial exports.</p>{% endif %}</div>
+{% if test %}<a class="back-link" href="{{ url_for('index') }}">← All reports and tests</a>
+{% else %}<a class="back-link" href="{{ url_for('run_detail', run_id=manifest.run_id) }}">← Back to report review</a>{% endif %}
+<header class="analysis-heading">
+  <p class="eyebrow">{{ 'Localization test' if test else 'Spatial localization' }}</p>
+  <h1>{{ test.event if test else 'Place the approved segments' }}</h1>
+  {% if test %}<p>Localization with your own segment table and spatial data. Extraction and human review were not run.</p>
+  {% else %}<p>{{ manifest.inputs | map(attribute='filename') | join(', ') }}. Combine report evidence with a local GIS package, then inspect the map, uncertainties, and spatial exports.</p>{% endif %}
+</header>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
 {% if manifest.status != 'approved' %}<p class="message">Approve this report in the review workspace to enable localization.</p>{% endif %}
 {% if test %}
-<section class="panel" aria-labelledby="inputs-heading">
+<section class="panel upload-panel page-section" aria-labelledby="inputs-heading">
 <h2 id="inputs-heading">Provided inputs</h2>
 <dl>
 <div><dt>Report</dt><dd>{{ test.reports | join(', ') }}</dd></div>
@@ -21,7 +26,7 @@
 </dl>
 </section>
 {% endif %}
-<section id="localization-state" class="panel status state-{{ state.info.status or 'none' }}" data-status-url="{{ url_for('localization_status', run_id=manifest.run_id) }}" data-approved="{{ 'true' if manifest.status == 'approved' else 'false' }}" aria-labelledby="progress-heading">
+<section id="localization-state" class="panel upload-panel page-section status state-{{ state.info.status or 'none' }}" data-status-url="{{ url_for('localization_status', run_id=manifest.run_id) }}" data-approved="{{ 'true' if manifest.status == 'approved' else 'false' }}" aria-labelledby="progress-heading">
 <div class="section-heading"><h2 id="progress-heading">Localization status</h2>
 <span id="localization-status" class="badge" role="status">{{ state.status_label }}</span></div>
 {% if test %}<ol id="localization-stages" class="stage-states">{% for stage in test.stages %}<li class="stage-{{ stage.status }}">{{ stage.label }} · {{ stage.status }}</li>{% endfor %}</ol>{% endif %}
@@ -32,7 +37,7 @@
 <div id="localization-issues" role="status"></div>
 <details><summary>Processing log</summary><ol id="localization-log" class="localization-log"></ol></details>
 </section>
-<section class="panel" aria-labelledby="results-heading">
+<section class="panel upload-panel page-section" aria-labelledby="results-heading">
 <div class="section-heading"><h2 id="results-heading">Spatial results</h2><a id="localization-map-link" class="button secondary" target="_blank" rel="noopener" hidden>Open map in a new tab</a></div>
 <p class="hint">Location and boundary confidence are independent. An unresolved segment has no geometry. Review these spatial results before using them.</p>
 <p id="localization-output-notice" role="status"></p>
@@ -41,7 +46,22 @@
 <h3 class="downloads-heading">Downloads</h3>
 <div id="localization-downloads" class="actions"></div>
 </section>
-<section class="panel" aria-labelledby="setup-heading">
+{% if terrain_url %}
+<section class="panel upload-panel page-section terrain3d" aria-labelledby="terrain-heading" data-terrain-url="{{ terrain_url }}">
+<div class="section-heading"><h2 id="terrain-heading">3D view</h2>
+<button type="button" class="button secondary" id="terrain-reset">Reset view</button></div>
+<div class="terrain3d-tools">
+<label>Segment<select id="terrain-segment"><option value="">All segments</option></select></label>
+<label>Basemap<select id="terrain-basemap"><option value="ortho">Orthophoto (basemap.at)</option><option value="osm">OpenStreetMap</option>
+<option value="grau">basemap.at grey</option><option value="none">Hillshade only</option></select></label>
+<label>Height ×<input id="terrain-exag" type="range" min="1" max="3" step="0.25" value="1.5"></label>
+<label class="checkbox"><input type="checkbox" id="terrain-labels" checked>Part labels</label>
+</div>
+<p class="hint">The run's parts draped on the elevation model it was localized on. Drag to rotate, right-drag to pan, scroll to zoom.</p>
+<div class="terrain3d-box" id="terrain-box"><p class="cmp-loading">Loading the terrain…</p></div>
+</section>
+{% endif %}
+<section class="panel upload-panel page-section" aria-labelledby="setup-heading">
 <details id="setup-details" {% if not existing or error %}open{% endif %}>
 <summary><h2 id="setup-heading">{{ 'Run again or resume' if existing else 'Localization setup' }}</h2></summary>
 <p class="hint">Use file paths on this computer. A spatial package JSON declares the catchment, streams, elevation raster, and optional layers; its data paths stay relative to that JSON.</p>
@@ -58,4 +78,17 @@
 </section>
 <script id="localization-data" type="application/json">{{ state | tojson }}</script>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>
+{% if terrain_url %}<script type="module">
+import { mount } from "{{ url_for('static', filename='terrain3d.js') }}";
+const panel = document.querySelector(".terrain3d"), box = document.getElementById("terrain-box");
+mount(box, { url: panel.dataset.terrainUrl, basemap: document.getElementById("terrain-basemap").value }).then(view => {
+  const select = document.getElementById("terrain-segment");
+  for (const s of view.data.segments) select.add(new Option(`Segment ${s.id} · ${s.process.slice(0, 70)}`, s.id));
+  select.addEventListener("change", () => view.setSegment(select.value));
+  document.getElementById("terrain-basemap").addEventListener("change", e => view.setBasemap(e.target.value));
+  document.getElementById("terrain-exag").addEventListener("input", e => view.setExaggeration(e.target.value));
+  document.getElementById("terrain-labels").addEventListener("change", e => view.setOptions({ labels: e.target.checked }));
+  document.getElementById("terrain-reset").addEventListener("click", () => view.resetView());
+}).catch(err => { box.innerHTML = ""; const p = document.createElement("p"); p.className = "message error"; p.textContent = err.message || String(err); box.append(p); });
+</script>{% endif %}{% endblock %}

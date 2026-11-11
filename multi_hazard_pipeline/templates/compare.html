@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Compare localizations · Multi-hazard review{% endblock %}
+{% block styles %}
+<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">
+<link rel="stylesheet" href="{{ url_for('leaflet_file', filename='leaflet.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='compare.css') }}">
+<script type="importmap">{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+{% endblock %}
+{% block body_class %}index-page{% endblock %}
+{% block content %}
+<header class="analysis-heading">
+  <p class="eyebrow">Localization comparison</p>
+  <h1>Compare localizations</h1>
+  <p>Choose a report to see every localization of it side by side: pipeline runs, and agent runs imported for it.</p>
+</header>
+{% if not groups %}
+<section class="panel upload-panel page-section"><p>No localization run has map outputs yet. Run a localization, or
+<a href="{{ url_for('import_agent_localization') }}">import runs</a> someone sent you.</p></section>
+{% else %}
+<nav class="workflow-cards cmp-reports" aria-label="Reports">
+{% for g in groups %}{% set active = group and g.signature == group.signature %}
+<a class="workflow-card{% if active %} is-active{% endif %}" href="{{ url_for('compare_localizations', report=g.signature) }}"{% if active %} aria-current="page"{% endif %}>
+<span class="eyebrow">REPORT</span><strong>{{ g.event or 'Unnamed report' }}</strong>
+<span>{{ g.segments }} segments · {{ g.runs|length }} run{{ '' if g.runs|length == 1 else 's' }}</span></a>
+{% endfor %}
+</nav>
+<form class="panel upload-panel page-section cmp-pick" method="get" action="{{ url_for('compare_localizations') }}">
+<input type="hidden" name="report" value="{{ group.signature }}">
+<div class="upload-panel__heading"><h2>{{ group.event }} runs</h2>
+<span class="cmp-actions"><a class="button secondary" href="{{ url_for('import_agent_localization', report=group.signature) }}">Import runs</a>
+<a class="button secondary" href="{{ url_for('download_localizations', runs=selected) }}" download>Download these runs</a></span></div>
+<ul class="cmp-runs">
+{% for run in group.runs %}
+<li><label><input type="checkbox" name="runs" value="{{ run.run_id }}" {% if run.run_id in selected %}checked{% endif %}>
+<span class="cmp-kind cmp-kind--{{ run.kind }}">{{ 'Agent' if run.kind == 'agent' else 'Pipeline' }}</span>
+<strong>{{ run.model }}</strong>
+<span class="cmp-when">{{ run.created_at[:16]|replace('T', ' ') }} UTC{% if run.kind == 'pipeline' %} · {{ run.status|replace('_', ' ') }}{% endif %}</span></label>
+<a class="cmp-only" href="{{ url_for('compare_localizations', report=group.signature, runs=[run.run_id]) }}">Only this run</a></li>
+{% endfor %}
+</ul>
+<div class="form-submit"><p class="hint">Every run of the report is selected unless you change the selection.</p><button type="submit">Show selected runs <span aria-hidden="true">→</span></button></div>
+</form>
+{% if selected %}
+<section class="cmp" id="cmp" data-url="{{ data_url }}" data-terrain-url="{{ terrain_url }}"
+         data-terrain-module="{{ url_for('static', filename='terrain3d.js') }}">
+<div class="cmp-toolbar">
+  <div class="cmp-group-btns" id="viewTabs"><span class="cmp-lbl">View</span>
+    <button type="button" class="cmp-tab" data-view="side" aria-pressed="true">Side by side</button>
+    <button type="button" class="cmp-tab" data-view="overlay" aria-pressed="false">Overlay</button>
+    <button type="button" class="cmp-tab" data-view="3d" aria-pressed="false">3D</button>
+  </div>
+  <label class="cmp-lbl">Basemap
+    <select id="basemap">
+      <option value="osm">OpenStreetMap</option>
+      <option value="grau">basemap.at grey</option>
+      <option value="ortho">basemap.at orthophoto</option>
+      <option value="none">None</option>
+    </select></label>
+  <label class="cmp-tog"><input type="checkbox" id="ctx" checked> GIS context</label>
+  <label class="cmp-tog"><input type="checkbox" id="others"> Other segments</label>
+  <label class="cmp-tog"><input type="checkbox" id="labels" checked> Part labels</label>
+</div>
+<p class="cmp-loading" id="cmpStatus">Loading the runs…</p>
+<div class="cmp-layout" hidden id="cmpBody">
+  <aside id="segList" aria-label="Segments"></aside>
+  <div class="cmp-main">
+    <div class="cmp-keys" id="keys"></div>
+    <div class="cmp-maps" id="maps"></div>
+    <section class="cmp-compare" id="compare"></section>
+  </div>
+</div>
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if selected %}
+<script src="{{ url_for('leaflet_file', filename='leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='compare.js') }}"></script>
+{% endif %}
+{% endblock %}
