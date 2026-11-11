@@ -34,12 +34,13 @@
 </span></div>{% endif %}
 </section>
 {% endif %}
-<form method="post" action="{{ url_for('save_agent_localization') }}" enctype="multipart/form-data">
+<form id="import-form" method="post" action="{{ url_for('save_agent_localization') }}" enctype="multipart/form-data">
 <section class="panel upload-panel page-section form-section" aria-labelledby="files-heading">
 <h2 id="files-heading"><span class="step-number">1</span>Zip of runs</h2>
 <p class="hint">A bundle from Compare → Download these runs imports as it is: it names each run's report and model and
 brings the report's segments and GIS context with it. Runs that are already here are skipped.{% if error %} Select the zip again after an error.{% endif %}</p>
-<label class="upload-zone">Choose the zip<input type="file" name="outputs" accept=".zip" required></label>
+<label class="upload-zone"><span id="zip-prompt">Choose the zip</span><input type="file" name="outputs" accept=".zip" aria-labelledby="zip-prompt" aria-describedby="selected-zip" required></label>
+<p id="selected-zip" class="selected-files hint" role="status" aria-live="polite">No ZIP selected</p>
 <details><summary>What an agent run folder must contain</summary>
 <ul class="hint">
 <li><code>placements.gpkg</code> with a layer <code>parts</code>: one feature per mapped part with <code>seg_id</code>, <code>part_id</code>, <code>label</code>,
@@ -61,6 +62,7 @@ brings the report's segments and GIS context with it. Runs that are already here
 </select></label>
 <label>Model and settings (for a single run)<input name="model" value="{{ form.get('model', '') }}" placeholder="Claude Opus 5.5 · medium"></label>
 </section>
-<div class="form-submit"><span></span><button type="submit">Import the runs <span aria-hidden="true">→</span></button></div>
+<div class="form-submit"><p id="import-message" role="status" aria-live="polite"></p><button type="submit">Import the runs <span aria-hidden="true">→</span></button></div>
 </form>
 {% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='import-runs.js') }}" defer></script>{% endblock %}

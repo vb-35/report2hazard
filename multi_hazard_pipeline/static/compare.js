@@ -91,23 +91,34 @@
       <label class="cmp-lbl">Height ×<input id="exag3d" type="range" min="1" max="3" step="0.25" value="1.5"></label>
       <button type="button" class="cmp-tab" id="reset3d">Reset view</button>
       <span class="stat" id="stat3d"></span>
-      <span class="sub">Drag to rotate, right-drag to pan, scroll to zoom. Parts are draped on the run's elevation model.</span></div>
-      <div class="terrain" id="terrain3d"><p class="cmp-loading">Loading the terrain…</p></div>`;
+      <span class="sub">Drag to rotate, right-drag to pan, scroll to zoom. Choose a terrain source below. Terrain is used for viewing only.</span></div>
+      <div id="terrain-sources"></div><div class="terrain" id="terrain3d"><p class="cmp-loading">Loading the terrain…</p></div>`;
     box.append(card);
     const swatch = () => { const m = DATA.models.find(x => x.key === S.run3d), run = REP.runs[S.run3d];
       $("stat3d").innerHTML = `<span class="sw" style="background:${m.color}"></span> ${run.features.length} parts`; };
     swatch();
-    import(root.dataset.terrainModule)
-      .then(mod => mod.mount($("terrain3d"), { url: root.dataset.terrainUrl, run: S.run3d, segment: S.seg,
-        basemap: $("basemap").value, labels: $("labels").checked, context: $("ctx").checked, others: $("others").checked }))
-      .then(view => {
-        if (token !== token3d) { view.dispose(); return; }
-        view3d = view;
-        $("run3d").addEventListener("change", e => { S.run3d = e.target.value; view.setRun(S.run3d); swatch(); });
-        $("exag3d").addEventListener("input", e => view.setExaggeration(e.target.value));
-        $("reset3d").addEventListener("click", () => view.resetView());
-      })
-      .catch(err => { if (token === token3d) $("terrain3d").innerHTML = `<p class="message error">${esc(err.message || err)}</p>`; });
+    import(root.dataset.terrainModule).then(mod => {
+      if (token !== token3d) return;
+      mod.terrainSources($("terrain-sources"), root.dataset.terrainUrl, async options => {
+        if (token !== token3d) throw new Error("View changed.");
+        view3d = null;
+        $("terrain3d").textContent = "Loading terrain...";
+        try {
+          const view = await mod.mount($("terrain3d"), { ...options, run: S.run3d, segment: S.seg,
+            basemap: $("basemap").value, labels: $("labels").checked, context: $("ctx").checked, others: $("others").checked });
+          if (token !== token3d) { view.dispose(); throw new Error("View changed."); }
+          view3d = view;
+          $("exag3d").value = "1.5";
+          $("run3d").onchange = e => { S.run3d = e.target.value; view.setRun(S.run3d); swatch(); };
+          $("exag3d").oninput = e => view.setExaggeration(e.target.value);
+          $("reset3d").onclick = () => view.resetView();
+          return view;
+        } catch (err) {
+          if (token === token3d) { view3d = null; $("terrain3d").textContent = "Choose a terrain source above to load the 3D view."; }
+          throw err;
+        }
+      });
+    }).catch(err => { if (token === token3d) $("terrain3d").textContent = err.message || String(err); });
   }
 
   function buildMaps() {

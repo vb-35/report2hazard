@@ -13,10 +13,54 @@ const TEXTURE_PX = 2048;
 const MAX_TILES = 144;
 
 export async function mount(container, options = {}) {
-  const response = await fetch(options.url, { headers: { Accept: "application/json" } });
+  const body = options.file ? new FormData() : null;
+  if (body) body.append("dem", options.file);
+  const response = await fetch(options.url, { method: body ? "POST" : "GET", body, headers: { Accept: "application/json" } });
   const data = await response.json().catch(() => ({}));
+  if (response.headers.get("X-Terrain-Version") !== "2") {
+    throw new Error("The interface server is still running an older version. Close its server window, reopen Start Interface.cmd, then reload this page.");
+  }
   if (!response.ok) throw new Error(data.error || "The 3D view could not be loaded.");
+  const source = new URL(options.url, location.href).searchParams.get("source") || "run";
+  if (data.terrain?.source !== source) throw new Error("The server did not load the selected terrain source. Reload the interface and try again.");
   return new TerrainView(container, data, options);
+}
+
+// Shared source choices for single-run and comparison views; remain usable after a load failure.
+export function terrainSources(host, url, load) {
+  host.innerHTML = `<div class="terrain3d-tools">
+    <button type="button" class="button secondary" data-source="run">Use run DEM</button>
+    <button type="button" class="button secondary" data-source="online">Retrieve online terrain</button>
+    <label>Elevation GeoTIFF <input type="file" accept=".tif,.tiff" aria-label="Elevation GeoTIFF"></label>
+    <button type="button" class="button secondary" data-source="upload">Upload DEM</button>
+    </div><p class="hint" role="status" aria-live="polite"></p>`;
+  const status = host.querySelector('[role="status"]');
+  let generation = 0, current = null;
+  async function run(source, file) {
+    const token = ++generation;
+    host.querySelectorAll('button').forEach(b => b.disabled = true);
+    status.textContent = source === 'online' ? 'Retrieving online terrain (first load may take a minute)…' : 'Loading elevation model…';
+    const target = new URL(url, location.href); target.searchParams.set('source', source);
+    try {
+      if (current) { current.dispose(); current = null; }
+      const view = await load({ url: target.href, file });
+      if (token !== generation) { view.dispose(); return; }
+      current = view;
+      status.textContent = view.data.terrain.attribution || 'Elevation model loaded.';
+    } catch (err) {
+      if (token === generation) status.textContent = err.message || String(err);
+    } finally {
+      if (token === generation) host.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+  }
+  host.querySelectorAll('[data-source]').forEach(b => b.addEventListener('click', () => {
+    const file = host.querySelector('input').files[0];
+    run(b.dataset.source, b.dataset.source === 'upload' ? file : null);
+  }));
+  host.querySelector('input').addEventListener('change', e => {
+    status.textContent = e.target.files[0] ? `Selected: ${e.target.files[0].name}. Click Upload DEM.` : 'No DEM selected.';
+  });
+  run('run');
 }
 
 const tile2lon = (x, z) => x / 2 ** z * 360 - 180;

@@ -217,6 +217,85 @@ class LocalizationCompareTests(TestCase):
         self.assertIn(f"report={report}&amp;runs={outcome['run_id']}", index)  # an agent card opens just that run
         self.assertEqual(client.get("/localization/terrain?runs=missing").status_code, 400)
 
+    def test_terrain_sources_without_a_run_dem(self):
+        from unittest.mock import patch
+        from multi_hazard_pipeline import web
+        from multi_hazard_pipeline.localization_compare import dem_file
+        from multi_hazard_pipeline.core import read_json
+        base = self.results / self.base
+        dem = dem_file(base)
+        hidden = dem.with_suffix(".backup")
+        original_config = (base / "localization/run.json").read_bytes()
+        dem.rename(hidden)
+        try:
+            client = web.create_app(self.results).test_client()
+            self.assertIn('id="terrain-box"', client.get(f"/runs/{self.base}/localization").get_data(as_text=True))
+            url = f"/localization/terrain?runs={self.base}"
+            self.assertEqual(client.get(url).status_code, 400)
+            def fake_fetch(path, bounds, crs):
+                shutil.copyfile(hidden, path)
+            with patch("multi_hazard_pipeline.terrain_sources.fetch_online_dem", side_effect=fake_fetch) as fetch:
+                first = client.get(url + "&source=online")
+                self.assertEqual(first.status_code, 200, first.get_json())
+                self.assertIn("Copernicus", first.get_json()["terrain"]["attribution"])
+                self.assertEqual(client.get(url + "&source=online").status_code, 200)
+                self.assertEqual(fetch.call_count, 1)
+            uploaded = client.post(url + "&source=upload", data={"dem": (io.BytesIO(hidden.read_bytes()), "dem.tif")})
+            self.assertEqual(uploaded.status_code, 200, uploaded.get_json())
+            self.assertEqual(client.get(url + "&source=upload").status_code, 200)
+            self.assertEqual(client.get(url + "&source=bogus").status_code, 400)
+            self.assertEqual(client.post(url + "&source=upload", data={"dem": (io.BytesIO(b"bad"), "bad.tif")}).status_code, 400)
+            self.assertEqual(client.get(url + "&source=upload").status_code, 200)  # failed upload preserves prior DEM
+            self.assertEqual((base / "localization/run.json").read_bytes(), original_config)
+        finally:
+            hidden.rename(dem)
+            shutil.rmtree(base / "localization/visualization", ignore_errors=True)
+
+    def test_uploaded_dem_is_reprojected_and_nonoverlap_is_rejected(self):
+        import numpy as np
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_bounds
+        from rasterio.warp import transform_bounds
+        from multi_hazard_pipeline import web
+        from multi_hazard_pipeline.localization_compare import dem_file
+        base = self.results / self.base
+        with rasterio.open(dem_file(base)) as src:
+            bounds = transform_bounds(src.crs, 4326, *src.bounds)
+        def raster(bounds, crs):
+            with MemoryFile() as mem:
+                with mem.open(driver="GTiff", width=40, height=40, count=1, dtype="float32", crs=crs,
+                              transform=from_bounds(*bounds, 40, 40)) as dst:
+                    dst.write(np.arange(1600, dtype="float32").reshape(40, 40), 1)
+                return mem.read()
+        client = web.create_app(self.results).test_client()
+        url = f"/localization/terrain?runs={self.base}&source=upload"
+        try:
+            response = client.post(url, data={"dem": (io.BytesIO(raster(bounds, "EPSG:4326")), "wgs84.tif")})
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()["terrain"]["crs"], CRS)
+            self.assertEqual(response.headers["X-Terrain-Version"], "2")
+            # A run's original DEM may also use a different CRS: always warp it, never reject or relabel it.
+            dem = dem_file(base)
+            backup = dem.with_suffix(".backup")
+            dem.rename(backup)
+            try:
+                dem.write_bytes(raster(bounds, "EPSG:4326"))
+                run_dem = client.get(f"/localization/terrain?runs={self.base}&source=run")
+                self.assertEqual(run_dem.status_code, 200, run_dem.get_json())
+                grid = run_dem.get_json()["terrain"]
+                self.assertEqual(grid["crs"], CRS)
+                self.assertEqual(grid["source"], "run")
+                self.assertLess(grid["zmin"], grid["zmax"])
+            finally:
+                dem.unlink(missing_ok=True)
+                backup.rename(dem)
+            response = client.post(url, data={"dem": (io.BytesIO(raster((100, 20, 101, 21), "EPSG:4326")), "far.tif")})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("does not overlap", response.get_json()["error"])
+        finally:
+            shutil.rmtree(base / "localization/visualization", ignore_errors=True)
+
     def test_bundle_round_trip_into_an_empty_workspace(self):
         from multi_hazard_pipeline.localization_compare import comparable_groups, export_runs, import_runs
 

@@ -318,44 +318,56 @@ def _transform_coords(coords, transform):
     return [round(float(x), 1), round(float(y), 1)]
 
 
-def _terrain_grid(base_dir: Path) -> dict:
+def _terrain_grid(base_dir: Path, source="run", upload=None, fallback_bounds=None) -> dict:
     """A down-sampled DEM around the catchment, in the run's projected CRS, rows from north to south."""
     import numpy as np
     import rasterio
     from pyproj import CRS, Transformer
     from rasterio.enums import Resampling
     from rasterio.warp import transform_bounds
-    from rasterio.windows import from_bounds
+    from rasterio.vrt import WarpedVRT
+    from rasterio.transform import from_bounds
 
     from segment_mapping.runctx import Run
 
-    dem = dem_file(base_dir)
-    if dem is None:
-        raise PipelineError("This run has no elevation model (DEM), so there is no 3D view.")
-    key = (str(dem), dem.stat().st_mtime)
-    if key in _TERRAIN_CACHE:
-        return _TERRAIN_CACHE[key]
+    from .terrain_sources import terrain_dem
+
     run = Run(base_dir / "localization")
     crs = CRS.from_user_input(run.crs)
+    if not crs.is_projected:
+        raise PipelineError("3D viewing requires a projected run coordinate system in metres.")
     layers = ((run.config.get("package") or {}).get("layers")) or {}
     catchment = next((name for name, info in layers.items() if info.get("role") == "catchment" and name in run.layer_names()), None)
+    bounds = None
+    if catchment:
+        x0, y0, x1, y1 = run.layer(catchment).to_crs(crs).total_bounds
+        pad = 0.15 * max(x1 - x0, y1 - y0) + 300
+        bounds = (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+    elif fallback_bounds:
+        bounds = transform_bounds(4326, crs, *fallback_bounds)
+        pad = .15 * max(bounds[2] - bounds[0], bounds[3] - bounds[1]) + 300
+        bounds = (bounds[0]-pad, bounds[1]-pad, bounds[2]+pad, bounds[3]+pad)
+    dem, credit = terrain_dem(base_dir, source, bounds, crs, upload)
+    key = (str(dem), dem.stat().st_mtime_ns, str(crs), bounds)
+    if key in _TERRAIN_CACHE:
+        return _TERRAIN_CACHE[key]
     with rasterio.open(dem) as ds:
-        dem_crs = CRS.from_user_input(ds.crs) if ds.crs else crs
-        if catchment:
-            x0, y0, x1, y1 = run.layer(catchment).to_crs(crs).total_bounds
-            pad = 0.15 * max(x1 - x0, y1 - y0) + 300
-            bounds = (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
-        else:
-            bounds = transform_bounds(dem_crs, crs, *ds.bounds)
-        if dem_crs != crs:
-            raise PipelineError("The elevation model is not in the run's coordinate system.")
-        b = ds.bounds
-        bounds = (max(bounds[0], b.left), max(bounds[1], b.bottom), min(bounds[2], b.right), min(bounds[3], b.top))
+        if not ds.crs:
+            raise PipelineError("The DEM has no coordinate system. Upload a GeoTIFF with a defined CRS.")
+        b = transform_bounds(ds.crs, crs, *ds.bounds)
+        bounds = bounds or b
+        bounds = (max(bounds[0], b[0]), max(bounds[1], b[1]), min(bounds[2], b[2]), min(bounds[3], b[3]))
         width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
+        if width <= 0 or height <= 0:
+            raise PipelineError("The DEM does not overlap this report's mapped area.")
         step = max(width, height) / (TERRAIN_CELLS - 1)
         nx, ny = max(2, round(width / step) + 1), max(2, round(height / step) + 1)
-        window = from_bounds(*bounds, transform=ds.transform)
-        z = ds.read(1, window=window, out_shape=(ny, nx), resampling=Resampling.bilinear, masked=True).astype("float64")
+        # Mesh nodes sit on the bounds; raster samples sit at pixel centres.
+        dx, dy = width / (nx - 1), height / (ny - 1)
+        transform = from_bounds(bounds[0]-dx/2, bounds[1]-dy/2, bounds[2]+dx/2, bounds[3]+dy/2, nx, ny)
+        with WarpedVRT(ds, crs=crs, transform=transform, width=nx, height=ny,
+                       resampling=Resampling.bilinear, dtype="float32", nodata=float("nan")) as vrt:
+            z = vrt.read(1, masked=True).astype("float64")
     z = np.ma.masked_invalid(z)
     if z.count() == 0:
         raise PipelineError("The elevation model has no data around the catchment.")
@@ -371,19 +383,23 @@ def _terrain_grid(base_dir: Path) -> dict:
                   z=[round(float(v), 1) for v in filled.ravel()], zmin=round(float(filled.min()), 1),
                   zmax=round(float(filled.max()), 1), lonlat_to_xy=[float(v) for v in (*ax, *ay)],
                   lonlat_bounds=[float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max())],
-                  dem=dem.name)
+                  dem=dem.name, attribution=credit, source=source)
     _TERRAIN_CACHE[key] = result
     return result
 
 
-def terrain_data(root: Path, run_ids: list[str]) -> dict:
+def terrain_data(root: Path, run_ids: list[str], source="run", upload=None) -> dict:
     """Terrain, context and each run's parts in the run's projected CRS, for the 3D view."""
     from pyproj import Transformer
 
     data = comparison_data(root, run_ids)
     report = data["reports"][0]
     base_dir = root / _entries(root)[data["models"][0]["key"]]["base_run_id"]
-    grid = _terrain_grid(base_dir)
+    features = report["context"].get("catchment", []) or [f for r in report["runs"].values() for f in r["features"]]
+    from shapely.geometry import shape
+    boxes = [shape(f["geometry"]).bounds for f in features if f.get("geometry") and not shape(f["geometry"]).is_empty]
+    bounds = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
+    grid = _terrain_grid(base_dir, source, upload, bounds)
     to_xy = Transformer.from_crs(4326, grid["crs"], always_xy=True).transform
 
     def local(features):

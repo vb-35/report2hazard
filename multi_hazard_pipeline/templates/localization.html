@@ -50,6 +50,7 @@
 <section class="panel upload-panel page-section terrain3d" aria-labelledby="terrain-heading" data-terrain-url="{{ terrain_url }}">
 <div class="section-heading"><h2 id="terrain-heading">3D view</h2>
 <button type="button" class="button secondary" id="terrain-reset">Reset view</button></div>
+<div id="terrain-sources"></div>
 <div class="terrain3d-tools">
 <label>Segment<select id="terrain-segment"><option value="">All segments</option></select></label>
 <label>Basemap<select id="terrain-basemap"><option value="ortho">Orthophoto (basemap.at)</option><option value="osm">OpenStreetMap</option>
@@ -57,7 +58,7 @@
 <label>Height ×<input id="terrain-exag" type="range" min="1" max="3" step="0.25" value="1.5"></label>
 <label class="checkbox"><input type="checkbox" id="terrain-labels" checked>Part labels</label>
 </div>
-<p class="hint">The run's parts draped on the elevation model it was localized on. Drag to rotate, right-drag to pan, scroll to zoom.</p>
+<p class="hint">Choose the run DEM, retrieve online terrain, or upload an elevation GeoTIFF (heights in metres). Terrain is used for viewing only. Drag to rotate, right-drag to pan, scroll to zoom.</p>
 <div class="terrain3d-box" id="terrain-box"><p class="cmp-loading">Loading the terrain…</p></div>
 </section>
 {% endif %}
@@ -80,15 +81,26 @@
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>
 {% if terrain_url %}<script type="module">
-import { mount } from "{{ url_for('static', filename='terrain3d.js') }}";
+import { mount, terrainSources } from "{{ url_for('static', filename='terrain3d.js') }}";
 const panel = document.querySelector(".terrain3d"), box = document.getElementById("terrain-box");
-mount(box, { url: panel.dataset.terrainUrl, basemap: document.getElementById("terrain-basemap").value }).then(view => {
-  const select = document.getElementById("terrain-segment");
-  for (const s of view.data.segments) select.add(new Option(`Segment ${s.id} · ${s.process.slice(0, 70)}`, s.id));
-  select.addEventListener("change", () => view.setSegment(select.value));
-  document.getElementById("terrain-basemap").addEventListener("change", e => view.setBasemap(e.target.value));
-  document.getElementById("terrain-exag").addEventListener("input", e => view.setExaggeration(e.target.value));
-  document.getElementById("terrain-labels").addEventListener("change", e => view.setOptions({ labels: e.target.checked }));
-  document.getElementById("terrain-reset").addEventListener("click", () => view.resetView());
-}).catch(err => { box.innerHTML = ""; const p = document.createElement("p"); p.className = "message error"; p.textContent = err.message || String(err); box.append(p); });
+let currentView;
+terrainSources(document.getElementById("terrain-sources"), panel.dataset.terrainUrl, async options => {
+  currentView = null;
+  box.textContent = "Loading terrain...";
+  try {
+    const view = await mount(box, { ...options, basemap: document.getElementById("terrain-basemap").value });
+    currentView = view;
+    const select = document.getElementById("terrain-segment");
+    select.replaceChildren(new Option("All segments", ""));
+    for (const s of view.data.segments) select.add(new Option(`Segment ${s.id} \u00b7 ${s.process.slice(0, 70)}`, s.id));
+    document.getElementById("terrain-exag").value = "1.5";
+    document.getElementById("terrain-labels").checked = true;
+    return view;
+  } catch (err) { currentView = null; box.textContent = "Choose a terrain source above to load the 3D view."; throw err; }
+});
+document.getElementById("terrain-segment").onchange = e => currentView?.setSegment(e.target.value);
+document.getElementById("terrain-basemap").onchange = e => currentView?.setBasemap(e.target.value);
+document.getElementById("terrain-exag").oninput = e => currentView?.setExaggeration(e.target.value);
+document.getElementById("terrain-labels").onchange = e => currentView?.setOptions({ labels: e.target.checked });
+document.getElementById("terrain-reset").onclick = () => currentView?.resetView();
 </script>{% endif %}{% endblock %}

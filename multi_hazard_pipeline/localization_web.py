@@ -183,10 +183,8 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
             abort(404)
         state = data(run_dir)
         settings = state["info"].get("settings") or {"package": state["info"].get("package", "")}
-        from .localization_compare import dem_file
-
-        # The 3D view needs the run's map outputs and the elevation model it was localized on.
-        has_3d = (run_dir / "localization" / "outputs" / "segments.geojson").is_file() and dem_file(run_dir) is not None
+        # Terrain can come from the run, an online source, or an uploaded DEM.
+        has_3d = (run_dir / "localization" / "outputs" / "segments.geojson").is_file()
         return render_template("localization.html", manifest=manifest, state=state, settings=settings,
                                test=state["provided"], show_table=True, default_model=config.llm.model, error=error,
                                existing=(run_dir / "localization").exists(),
@@ -372,16 +370,20 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
         failed = all(item["status"] == "failed" for item in outcomes)
         return import_form(outcomes=outcomes, status=400 if failed else 200)
 
-    @app.get("/localization/terrain")
+    @app.route("/localization/terrain", methods=["GET", "POST"])
     def localization_terrain():
         from .localization_compare import terrain_data
 
         try:
-            response = jsonify(terrain_data(root, request.args.getlist("runs")))
+            response = jsonify(terrain_data(root, request.args.getlist("runs"),
+                                           source=request.args.get("source", "run"), upload=request.files.get("dem")))
         except PipelineError as exc:
-            return jsonify(error=str(exc)), 400
+            response = jsonify(error=str(exc))
+            response.status_code = 400
         except Exception as exc:  # noqa: BLE001 - shown in the 3D panel instead of a crash
-            return jsonify(error=f"The 3D view could not be built: {type(exc).__name__}: {exc}"), 500
+            response = jsonify(error=f"The 3D view could not be built: {type(exc).__name__}: {exc}")
+            response.status_code = 500
+        response.headers["X-Terrain-Version"] = "2"
         response.headers["Cache-Control"] = "no-store"
         return response
 
