@@ -197,11 +197,16 @@ def build_map_data(run: Run, popup_html, title: str, context: list[tuple[str, ob
             lon, lat = t.transform(p.x, p.y)
             tk.append({"label": html.escape(str(label)), "latlng": [lat, lon]})
     basemaps = run.config.get("basemaps") or [OSM_BASEMAP, ESRI_IMAGERY]
+    basemaps = list(basemaps)
+    if not any(bm.get("name") == "Sentinel-2 cloudless (AlpTap)" for bm in basemaps):
+        basemaps.append(dict(name="Sentinel-2 cloudless (AlpTap)",
+            url="https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg",
+            attr='EOxCloudless <a href="https://cloudless.eox.at">EOX</a> · Contains modified Copernicus Sentinel data 2024 · CC BY-NC-SA', max_zoom=19, max_native_zoom=14))
     tiles = []
     for bm in basemaps:
         url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png" if bm["url"] == "OpenStreetMap" else bm["url"]
         tiles.append({"name": html.escape(str(bm["name"])), "url": url, "attr": bm.get("attr", ""), "wms": bm.get("type") == "wms",
-                      "layers": bm.get("layers", ""), "opacity": bm.get("opacity", 1), "max_zoom": bm.get("max_zoom", 19)})
+                      "layers": bm.get("layers", ""), "opacity": bm.get("opacity", 1), "max_native_zoom": bm.get("max_native_zoom", bm.get("max_zoom", 19)), "max_zoom": bm.get("max_zoom", 19)})
     from .runctx import read_json
     outcomes = read_json(run.out / "segment_results.json", [])
     if len(web):
@@ -250,7 +255,7 @@ var bases={},overlays={};
 var blank=L.layerGroup();bases['No base map (offline)']=blank;
 D.tiles.forEach(function(t){
   var lyr=t.wms?L.tileLayer.wms(t.url,{layers:t.layers,format:'image/png',transparent:true,attribution:t.attr,opacity:t.opacity})
-              :L.tileLayer(t.url,{attribution:t.attr,maxZoom:t.max_zoom});
+              :L.tileLayer(t.url,{attribution:t.attr,maxZoom:t.max_zoom,maxNativeZoom:t.max_native_zoom||t.max_zoom});
   if(t.wms){overlays[t.name]=lyr}else{bases[t.name]=lyr}
 });
 var firstTile=Object.keys(bases).filter(function(k){return k!=='No base map (offline)'})[0];
@@ -272,8 +277,13 @@ D.segments.forEach(function(s){
   });
   g.addTo(map);overlays[s.name]=g;
 });
-L.control.layers(bases,overlays,{collapsed:false}).addTo(map);
+L.control.layers(bases,overlays,{collapsed:false,position:'topleft'}).addTo(map);
 L.control.scale().addTo(map);
+var north=L.control({position:'topright'});
+north.onAdd=function(){var el=L.DomUtil.create('div');el.setAttribute('role','img');el.setAttribute('aria-label','North');
+  el.style.cssText='width:36px;height:58px;display:grid;place-items:center;background:#fffffff0;border:1px solid #b6c2bb;border-radius:6px;font:700 12px system-ui;color:#263e36;pointer-events:none';
+  el.innerHTML='<span>N</span><svg viewBox="0 0 24 32" width="24" height="32"><path d="M12 2L21 29L12 23Z" fill="white" stroke="#263e36"/><path d="M12 2L3 29L12 23Z" fill="#263e36"/></svg>';return el;};
+north.addTo(map);
 var lg=L.control({position:'bottomleft'});
 function esc(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 lg.onAdd=function(){var d=L.DomUtil.create('div','legend');
@@ -318,3 +328,21 @@ def embedded_counts(page_text: str) -> dict:
                 popups=sum(bool(f["properties"]["popup"]) for f in feats), hillshade=bool(d.get("hillshade")),
                 context_layers=len(d.get("context", [])), invalid_geometries=invalid_embedded(d),
                 leaflet_inlined="Leaflet 1.9.4" in page_text)
+
+
+def upgrade_saved_map(document: str) -> str:
+    """Apply viewer controls to previously generated maps without changing saved results."""
+    if "var map=L.map('map'" not in document:
+        return document
+    if "var north=L.control" not in document:
+        compass = _TEMPLATE.split("var north=L.control", 1)[1].split("north.addTo(map);", 1)[0]
+        document = document.replace("L.control.scale().addTo(map);",
+            "L.control.scale().addTo(map);\nvar north=L.control" + compass + "north.addTo(map);")
+    if 'Sentinel-2 cloudless (AlpTap)' not in document:
+        document = document.replace("D.tiles.forEach(function(t){", """D.tiles.push({name:'Sentinel-2 cloudless (AlpTap)',
+url:'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg',
+attr:'EOxCloudless EOX · Contains modified Copernicus Sentinel data 2024 · CC BY-NC-SA',max_zoom:19,max_native_zoom:14});
+D.tiles.forEach(function(t){""")
+    document = document.replace("maxZoom:t.max_zoom}", "maxZoom:t.max_zoom,maxNativeZoom:t.max_native_zoom||t.max_zoom}")
+    return document.replace("L.control.layers(bases,overlays,{collapsed:false})",
+                            "L.control.layers(bases,overlays,{collapsed:false,position:'topleft'})")

@@ -1,6 +1,11 @@
 :root { font-family: "Geist Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+/* Shared relief, with a distinct pale tint for each workflow. */
+[data-workflow="reports"] { --workflow-background: #f7f9fc; }
+[data-workflow="localization"] { --workflow-background: #f0f7f3; }
+[data-workflow="compare"] { --workflow-background: #f8f3ed; }
+body[data-workflow] { background-color: var(--workflow-background); }
 body > .site-header { min-height: 62px; padding: 0; border-bottom: 1px solid #e4e4e7; background: rgb(255 255 255 / 94%); color: #18181b; }
-.site-header__inner { width: min(1268px, calc(100% - 48px)); min-height: 62px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
+.site-header__inner { width: min(1268px, calc(100% - 48px)); max-width: none; padding-inline: 0; min-height: 62px; margin: auto; display: flex; align-items: center; justify-content: space-between; }
 .brand { display: inline-flex; align-items: center; gap: 10px; color: #18181b !important; text-decoration: none; }
 .brand > span:last-child { display: grid; gap: 1px; }
 .brand strong { font-size: 14px; line-height: 1.2; letter-spacing: -.01em; }
@@ -8,4 +13,16 @@ body > .site-header { min-height: 62px; padding: 0; border-bottom: 1px solid #e4
 .brand-mark { width: 28px; height: 28px; display: block; flex-shrink: 0; object-fit: contain; padding: 0; border: 0; border-radius: 0; }
 .local-label { padding-left: 24px; border-left: 1px solid #e4e4e7; color: #71717a; font: 500 12px/1 "Geist Mono", ui-monospace, SFMono-Regular, Consolas, monospace; }
 .site-footer { width: min(1268px, calc(100% - 48px)); max-width: none; padding: 20px 0 32px; color: #71717a; border-top: 1px solid #e4e4e7; font-size: 12px; }
+.site-header .site-nav { display: inline-flex; align-items: center; gap: 5px; padding: 4px; border: 1px solid #e1e5e7; border-radius: 14px; background: #f3f5f5; }
+.site-header .site-nav a { display: inline-flex; align-items: center; justify-content: center; min-height: 34px; padding: 7px 15px; border: 1px solid #e0e5e7; border-radius: 10px; background: #f9fafa; color: #626d73; opacity: 1; font-size: 13px; font-weight: 550; line-height: 1.25; text-decoration: none; transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease; }
+.site-header .site-nav a:hover { border-color: #c5d0ce; background: #edf2f0; color: #29473f; }
+.site-header .site-nav a[aria-current="page"] { border-color: #aebfba; background: #e5eeea; color: #29473f; box-shadow: 0 1px 3px rgb(30 45 40 / 8%); }
+.site-header .site-nav a:focus-visible { outline: 3px solid rgb(64 100 88 / 30%); outline-offset: 2px; }
+@media (max-width: 720px) { .site-header__inner { width: calc(100% - 32px); flex-wrap: wrap; padding-block: 12px; gap: 12px; }.site-header .site-nav { flex-wrap: nowrap; }.site-header .site-nav a { padding-inline: 10px; }.local-label { display: none; } }
 @media (max-width: 640px) { .site-header__inner, .site-footer { width: min(100% - 32px, 1100px); }.local-label { display: none; } }
+
+/* The SVG alone spins; the inset medallion stays still. One quick spin every 18s. */
+.brand-medallion { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 50%; border: 1px solid #c4cfca; background: linear-gradient(145deg,#d8e1dc,#fafcfb); box-shadow: inset 2px 3px 5px #a9b7b080, inset -2px -2px 4px white, 0 1px 0 white; perspective: 180px; }
+.brand-medallion .brand-mark { animation: logo-coin 18s linear infinite; transform-origin: center; }
+@keyframes logo-coin { 0%, 90% { transform: rotateX(0) rotateY(0) rotateZ(0); } 92% { transform: rotateX(18deg) rotateY(180deg) rotateZ(-8deg); } 94% { transform: rotateX(12deg) rotateY(540deg) rotateZ(6deg); } 97%,100% { transform: rotateX(0) rotateY(720deg) rotateZ(0); } }
+@media (prefers-reduced-motion: reduce) { .brand-medallion .brand-mark { animation: none; } }

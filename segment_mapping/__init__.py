@@ -6,4 +6,8 @@ in data files inside the run folder (run.json, scripts/placements.json), so a
 model running the mapping prompt never has to write code.
 """
 
+from .runtime import configure_gis_runtime
+
+configure_gis_runtime()
+
 __version__ = "1.0.0"

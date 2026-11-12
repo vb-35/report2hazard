@@ -29,11 +29,13 @@
 <div class="upload-panel__heading"><h2>{{ group.event }} runs</h2>
 <span class="cmp-actions"><a class="button secondary" href="{{ url_for('import_agent_localization', report=group.signature) }}">Import runs</a>
 <a class="button secondary" href="{{ url_for('download_localizations', runs=selected) }}" download>Download these runs</a></span></div>
+<p class="hint">Select runs to compare. Run references below identify each run throughout the views.</p>
 <ul class="cmp-runs">
 {% for run in group.runs %}
 <li><label><input type="checkbox" name="runs" value="{{ run.run_id }}" {% if run.run_id in selected %}checked{% endif %}>
 <span class="cmp-kind cmp-kind--{{ run.kind }}">{{ 'Agent' if run.kind == 'agent' else 'Pipeline' }}</span>
-<strong>{{ run.model }}</strong>
+<span class="run-ref">{% if run.run_id in selected %}R{{ selected.index(run.run_id) + 1 }}{% else %}—{% endif %}</span>
+<span class="run-identity"><strong>{{ run.model.split(' · ', 1)[1] if run.kind == 'pipeline' and run.model.startswith('Pipeline ') and ' · ' in run.model else run.model }}</strong><small title="{{ run.run_id }}">ID {{ run.run_id.rsplit('_', 1)[-1] }}</small></span>
 <span class="cmp-when">{{ run.created_at[:16]|replace('T', ' ') }} UTC{% if run.kind == 'pipeline' %} · {{ run.status|replace('_', ' ') }}{% endif %}</span></label>
 <a class="cmp-only" href="{{ url_for('compare_localizations', report=group.signature, runs=[run.run_id]) }}">Only this run</a></li>
 {% endfor %}
@@ -54,6 +56,7 @@
       <option value="osm">OpenStreetMap</option>
       <option value="grau">basemap.at grey</option>
       <option value="ortho">basemap.at orthophoto</option>
+      <option value="eox">Sentinel-2 cloudless (AlpTap)</option>
       <option value="none">None</option>
     </select></label>
   <label class="cmp-tog"><input type="checkbox" id="ctx" checked> GIS context</label>
@@ -64,8 +67,8 @@
 <div class="cmp-layout" hidden id="cmpBody">
   <aside id="segList" aria-label="Segments"></aside>
   <div class="cmp-main">
-    <div class="cmp-keys" id="keys"></div>
     <div class="cmp-maps" id="maps"></div>
+    <div class="cmp-keys" id="keys" role="group" aria-label="Map legend"></div>
     <section class="cmp-compare" id="compare"></section>
   </div>
 </div>
@@ -76,6 +79,6 @@
 {% block scripts %}
 {% if selected %}
 <script src="{{ url_for('leaflet_file', filename='leaflet.js') }}"></script>
-<script src="{{ url_for('static', filename='compare.js') }}"></script>
+<script type="module" src="{{ url_for('static', filename='compare.js') }}"></script>
 {% endif %}
 {% endblock %}

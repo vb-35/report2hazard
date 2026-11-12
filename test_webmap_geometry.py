@@ -159,3 +159,24 @@ class MapExport(TestCase):
         self.assertIn("disableScrollPropagation(d)", page)
         data = _embedded(self.page)
         self.assertEqual(sum(r["localization_status"] == "unresolved" for r in data["segment_results"]), 2)
+
+
+class SavedMapControls(TestCase):
+    def test_existing_maps_gain_controls_without_changing_data(self):
+        from segment_mapping.webmap import upgrade_saved_map
+        source = """<script id="segmap-data">{"segments":[]}</script>
+var map=L.map('map',{preferCanvas:false});
+D.tiles.forEach(function(t){L.tileLayer(t.url,{maxZoom:t.max_zoom})});
+L.control.layers(bases,overlays,{collapsed:false}).addTo(map);
+L.control.scale().addTo(map);"""
+        upgraded = upgrade_saved_map(source)
+        self.assertIn('s2cloudless-2024_3857', upgraded)
+        self.assertIn("var north=L.control({position:'topright'})", upgraded)
+        self.assertIn('maxNativeZoom:t.max_native_zoom', upgraded)
+        self.assertIn('<script id="segmap-data">{"segments":[]}</script>', upgraded)
+        self.assertEqual(upgrade_saved_map(upgraded), upgraded)
+
+    def test_unrecognized_imported_maps_are_preserved(self):
+        from segment_mapping.webmap import upgrade_saved_map
+        source = '<html><body>A custom imported map</body></html>'
+        self.assertEqual(upgrade_saved_map(source), source)

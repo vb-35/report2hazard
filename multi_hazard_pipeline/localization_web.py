@@ -410,7 +410,11 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
         path = _output_files(get_run_dir(run_id)).get(artifact)
         if path is None:
             abort(404)
-        response = send_file(path, as_attachment=artifact != "segments_map.html", download_name=artifact)
+        if artifact == "segments_map.html":
+            from segment_mapping.webmap import upgrade_saved_map
+            response = app.response_class(upgrade_saved_map(path.read_text(encoding="utf-8")), mimetype="text/html")
+        else:
+            response = send_file(path, as_attachment=True, download_name=artifact)
         if artifact == "segments_map.html":
             response.headers["Content-Security-Policy"] = "sandbox allow-scripts allow-downloads"
         response.headers["Cache-Control"] = "no-store"

@@ -3,7 +3,7 @@
 {% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='compare.css') }}">
 {% if terrain_url %}<script type="importmap">{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>{% endif %}{% endblock %}
-{% block body_class %}index-page{% endblock %}
+{% block body_class %}index-page localization-page{% endblock %}
 {% block content %}
 {% if test %}<a class="back-link" href="{{ url_for('index') }}">← All reports and tests</a>
 {% else %}<a class="back-link" href="{{ url_for('run_detail', run_id=manifest.run_id) }}">← Back to report review</a>{% endif %}
@@ -52,14 +52,17 @@
 <button type="button" class="button secondary" id="terrain-reset">Reset view</button></div>
 <div id="terrain-sources"></div>
 <div class="terrain3d-tools">
-<label>Segment<select id="terrain-segment"><option value="">All segments</option></select></label>
 <label>Basemap<select id="terrain-basemap"><option value="ortho">Orthophoto (basemap.at)</option><option value="osm">OpenStreetMap</option>
-<option value="grau">basemap.at grey</option><option value="none">Hillshade only</option></select></label>
-<label>Height ×<input id="terrain-exag" type="range" min="1" max="3" step="0.25" value="1.5"></label>
+<option value="grau">basemap.at grey</option><option value="eox">Sentinel-2 cloudless (AlpTap)</option><option value="none">Hillshade only</option></select></label>
+<label>Terrain exaggeration<input id="terrain-exag" type="range" min="1" max="3" step="0.25" value="1.5"></label>
 <label class="checkbox"><input type="checkbox" id="terrain-labels" checked>Part labels</label>
 </div>
+<fieldset class="terrain-segment-picker"><legend>Segments <span id="terrain-selection-count" role="status"></span></legend>
+<div class="selection-actions"><button class="button secondary" type="button" id="terrain-select-all">Select all</button><button class="button secondary" type="button" id="terrain-select-none">Clear</button></div>
+<div id="terrain-segments" class="terrain-segment-options"></div></fieldset>
 <p class="hint">Choose the run DEM, retrieve online terrain, or upload an elevation GeoTIFF (heights in metres). Terrain is used for viewing only. Drag to rotate, right-drag to pan, scroll to zoom.</p>
 <div class="terrain3d-box" id="terrain-box"><p class="cmp-loading">Loading the terrain…</p></div>
+<div class="cmp-keys" id="terrain-map-key" role="group" aria-label="Map legend"></div>
 </section>
 {% endif %}
 <section class="panel upload-panel page-section" aria-labelledby="setup-heading">
@@ -82,23 +85,36 @@
 {% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>
 {% if terrain_url %}<script type="module">
 import { mount, terrainSources } from "{{ url_for('static', filename='terrain3d.js') }}";
+import { mapLegend } from "{{ url_for('static', filename='map-display.js') }}";
 const panel = document.querySelector(".terrain3d"), box = document.getElementById("terrain-box");
-let currentView;
+let currentView, selectedSegments;
+const segmentOptions = document.getElementById("terrain-segments");
+document.getElementById("terrain-map-key").innerHTML = mapLegend({ terrain: true });
+function updateSegments() {
+  selectedSegments = [...segmentOptions.querySelectorAll("input:checked")].map(el => el.value);
+  document.getElementById("terrain-selection-count").textContent = `${selectedSegments.length} / ${segmentOptions.children.length} selected`;
+  currentView?.setSegments(selectedSegments);
+}
 terrainSources(document.getElementById("terrain-sources"), panel.dataset.terrainUrl, async options => {
   currentView = null;
   box.textContent = "Loading terrain...";
   try {
-    const view = await mount(box, { ...options, basemap: document.getElementById("terrain-basemap").value });
+    const view = await mount(box, { ...options, segments: selectedSegments, labels: document.getElementById("terrain-labels").checked,
+      exaggeration: Number(document.getElementById("terrain-exag").value), basemap: document.getElementById("terrain-basemap").value });
     currentView = view;
-    const select = document.getElementById("terrain-segment");
-    select.replaceChildren(new Option("All segments", ""));
-    for (const s of view.data.segments) select.add(new Option(`Segment ${s.id} \u00b7 ${s.process.slice(0, 70)}`, s.id));
-    document.getElementById("terrain-exag").value = "1.5";
-    document.getElementById("terrain-labels").checked = true;
+    segmentOptions.replaceChildren(...view.data.segments.map(s => {
+      const label = document.createElement("label"), input = document.createElement("input");
+      input.type = "checkbox"; input.value = s.id; input.checked = selectedSegments === undefined || selectedSegments.includes(s.id);
+      label.append(input, `Segment ${s.id}`); label.title = s.process; return label;
+    }));
+    updateSegments();
     return view;
   } catch (err) { currentView = null; box.textContent = "Choose a terrain source above to load the 3D view."; throw err; }
 });
-document.getElementById("terrain-segment").onchange = e => currentView?.setSegment(e.target.value);
+segmentOptions.addEventListener("change", updateSegments);
+for (const [id, checked] of [["terrain-select-all", true], ["terrain-select-none", false]]) {
+  document.getElementById(id).onclick = () => { segmentOptions.querySelectorAll("input").forEach(el => el.checked = checked); updateSegments(); };
+}
 document.getElementById("terrain-basemap").onchange = e => currentView?.setBasemap(e.target.value);
 document.getElementById("terrain-exag").oninput = e => currentView?.setExaggeration(e.target.value);
 document.getElementById("terrain-labels").onchange = e => currentView?.setOptions({ labels: e.target.checked });

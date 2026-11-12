@@ -33,7 +33,14 @@ boundaries. Return status review_required for ambiguous structure, including two
 physical page. Page numbers are physical 1-based PDF pages.
 
 The input encodes outline rows as [hierarchy_level, physical_page, bookmark_title] and page_context rows
-as [physical_page, extracted_text]. Return exactly one JSON object with these keys and no others:
+as [physical_page, extracted_text]. toc_candidates rows are [title, printed_page, physical_page];
+null physical pages are unresolved. The outline and TOC describe the whole document. Page context may
+be one batch of heading-centered excerpts. Verify starts and collection_end only on supplied context
+pages. Missing context for other pages is not ambiguity: those pages are checked in other batches.
+An excerpt separator [...] marks omitted text, not source evidence. A batch with no event starts may
+return pass with an empty events list. Keep geographic containers separate from their dated events;
+do not treat each internal subsection as an event or an internal section as collection_end.
+Return exactly one JSON object with these keys and no others:
 {"status":"pass","events":[{"title":"visible heading title","start_page":1,
 "heading_quote":"exact visible heading","confidence":0.99}],"collection_end":{"page":10,
 "heading_quote":"exact first post-collection heading"},"warnings":[]}. collection_end may be null.
@@ -44,7 +51,7 @@ TOC_HEADING = re.compile(
     re.IGNORECASE,
 )
 TOC_ENTRY = re.compile(r"^\s*(.+?)\s*(?:\.{2,}|\s{2,})\s*(\d+)\s*$")
-NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*\.?|[IVXLCDM]+\.?)\s*", re.IGNORECASE)
+NUMBERING = re.compile(r"^\s*(?:\d+(?:\.\d+)*\.?|[IVXLCDM]+\.?)\s+", re.IGNORECASE)
 MIN_CONFIDENCE = 0.8
 
 
@@ -106,7 +113,7 @@ def parse_toc(page_texts: list[str]) -> tuple[set[int], list[dict[str, Any]]]:
                 if match:
                     entries.append(
                         {
-                            "title": normalize_text(match.group(1)),
+                            "title": normalize_text(re.sub(r"\.{2,}", " ", match.group(1))),
                             "printed_page": int(match.group(2)),
                             "toc_page": page,
                         }
@@ -124,18 +131,29 @@ def _heading_key(text: str) -> str:
     return normalize_text(NUMBERING.sub("", text)).casefold().strip(" .:-")
 
 
+def _heading_matches(title: str, line: str) -> bool:
+    title = normalize_text(title).casefold()
+    line = normalize_text(line).casefold()
+    # Preserve section numbers when both sides have them, so repeated subsection
+    # names cannot resolve to a different report. Allow appended author credits.
+    if not (NUMBERING.match(title) and NUMBERING.match(line)):
+        title, line = _heading_key(title), _heading_key(line)
+    return bool(title) and (line == title or line.startswith(title + " ")
+                            or line.startswith(title + "("))
+
+
 def resolve_toc_candidates(
     candidates: list[dict[str, Any]], page_texts: list[str], toc_pages: set[int]
 ) -> list[dict[str, Any]]:
     resolved = []
     page_lines = {
-        page: {_heading_key(line) for line in text.splitlines() if _heading_key(line)}
+        page: [line for line in text.splitlines() if normalize_text(line)]
         for page, text in enumerate(page_texts, start=1)
         if page not in toc_pages
     }
     for candidate in candidates:
-        key = _heading_key(candidate["title"])
-        matches = [page for page, lines in page_lines.items() if key and key in lines]
+        matches = [page for page, lines in page_lines.items()
+                   if any(_heading_matches(candidate["title"], line) for line in lines)]
         resolved.append(candidate | {"physical_page": matches[0] if len(matches) == 1 else None})
     return resolved
 
@@ -262,19 +280,15 @@ def _candidate_payload(
     outline: list[dict[str, Any]],
     toc: list[dict[str, Any]],
     page_texts: list[str],
-    max_chars: int,
 ) -> dict[str, Any]:
     flat = flatten_outline(outline)
-    structural = {
-        node["page"]
-        for node in flat
-        if node["page"] is not None
-        and (node["level"] == 0 or any(
-            parent["page"] == node["page"] and parent["children"]
-            for parent in _walk_nodes(outline)
-        ))
-    }
+    structural = {node["page"] for node in flat
+                  if isinstance(node["page"], int) and 1 <= node["page"] <= len(page_texts)}
     structural.update(item["physical_page"] for item in toc if item.get("physical_page"))
+    unresolved = [item["title"] for item in toc if not item.get("physical_page")]
+    structural.update(page for page, text in enumerate(page_texts, start=1)
+                      if any(_heading_matches(title, line)
+                             for line in text.splitlines() for title in unresolved))
     pages = sorted(structural)
     compact_outline = [
         [item["level"], item["page"], item["title"][:120]] for item in flat
@@ -283,36 +297,49 @@ def _candidate_payload(
     for page in pages:
         for context_page in range(max(1, page - 1), min(len(page_texts), page + 1) + 1):
             context_pages.add(context_page)
-    base = {
+    titles = [node["title"] for node in flat] + [item["title"] for item in toc]
+    context = []
+    for page in sorted(context_pages):
+        text = page_texts[page - 1]
+        windows = [(0, min(len(text), 600 if page in structural else 160))]
+        offset = 0
+        for line in text.splitlines(keepends=True):
+            if any(_heading_matches(title, line) for title in titles):
+                windows.append((max(0, offset - 160), min(len(text), offset + len(line) + 700)))
+            offset += len(line)
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        context.append([page, "\n[...]\n".join(text[start:end] for start, end in merged)])
+    return {
         "outline": compact_outline,
-        "toc_candidates": toc,
+        "toc_candidates": [[item["title"], item["printed_page"], item.get("physical_page")]
+                           for item in toc],
         "candidate_pages": pages,
-        "page_context": [],
+        "page_context": context,
         "instruction": "Verify actual event starts and the first post-collection section.",
     }
-    candidate_chars = 240
-    neighbor_chars = 48
-    while True:
-        base["page_context"] = [
-            [
-                page,
-                page_texts[page - 1][
-                    : candidate_chars if page in structural else neighbor_chars
-                ],
-            ]
-            for page in sorted(context_pages)
-        ]
-        if len(json.dumps(base, ensure_ascii=False)) <= max_chars or candidate_chars == 1:
-            break
-        candidate_chars = max(1, candidate_chars * 4 // 5)
-        neighbor_chars = max(1, neighbor_chars * 4 // 5)
-    return base
 
 
-def _walk_nodes(nodes: list[dict[str, Any]]) -> Iterable[dict[str, Any]]:
-    for node in nodes:
-        yield node
-        yield from _walk_nodes(node["children"])
+def _candidate_batches(payload: dict[str, Any], max_chars: int) -> Iterable[dict[str, Any]]:
+    """Retain global structure and complete excerpts; never shrink away headings."""
+    base = payload | {"page_context": []}
+    batch: list[list[Any]] = []
+    for row in payload["page_context"]:
+        proposed = base | {"page_context": batch + [row]}
+        if len(json.dumps(proposed, ensure_ascii=False)) > max_chars:
+            if not batch:
+                raise PipelineError("PDF structure and page context exceed batch_max_chars; increase it")
+            yield base | {"page_context": batch}
+            batch = []
+            if len(json.dumps(base | {"page_context": [row]}, ensure_ascii=False)) > max_chars:
+                raise PipelineError("PDF structure and page context exceed batch_max_chars; increase it")
+        batch.append(row)
+    if batch:
+        yield base | {"page_context": batch}
 
 
 def _page_batches(page_texts: list[str], max_chars: int) -> Iterable[list[dict[str, Any]]]:
@@ -339,15 +366,27 @@ def _page_batches(page_texts: list[str], max_chars: int) -> Iterable[list[dict[s
 
 
 def _ask(client: ChatClient, payload: dict[str, Any], page_texts: list[str], toc_pages: set[int], *, allow_empty: bool) -> dict[str, Any]:
+    supplied_pages = {row[0] for row in payload["page_context"]} if "page_context" in payload else {
+        row["page"] for row in payload["pages"]
+    }
+
+    def validate(response: Any) -> None:
+        validate_separation(response, page_texts, toc_pages, allow_empty=allow_empty)
+        if response["status"] != "pass":
+            return
+        reported = {event["start_page"] for event in response["events"]}
+        if response["collection_end"]:
+            reported.add(response["collection_end"]["page"])
+        if not reported <= supplied_pages:
+            raise ValueError("boundaries must be verified on supplied context pages")
+
     return client.complete_json(
         system_prompt=EVENT_SEPARATION_PROMPT,
         user_payload=payload,
         response_schema=event_separation_response_schema(),
         request_attempts=max(5, client.config.retries) if isinstance(client, ChatClient) else 5,
         request_retry_delay_seconds=5,
-        validate=lambda response: validate_separation(
-            response, page_texts, toc_pages, allow_empty=allow_empty
-        ),
+        validate=validate,
     )
 
 
@@ -360,17 +399,14 @@ def _detect_boundaries(
     page_texts: list[str],
 ) -> dict[str, Any]:
     if outline or toc:
-        return _ask(
-            client,
-            _candidate_payload(outline, toc, page_texts, config.batch_max_chars),
-            page_texts,
-            toc_pages,
-            allow_empty=False,
-        )
-    responses = [
-        _ask(client, {"pages": batch}, page_texts, toc_pages, allow_empty=True)
-        for batch in _page_batches(page_texts, config.batch_max_chars)
-    ]
+        candidate = _candidate_payload(outline, toc, page_texts)
+        payloads = _candidate_batches(candidate, config.batch_max_chars)
+        if not candidate["page_context"]:
+            payloads = ({"pages": batch} for batch in _page_batches(page_texts, config.batch_max_chars))
+    else:
+        payloads = ({"pages": batch} for batch in _page_batches(page_texts, config.batch_max_chars))
+    responses = [_ask(client, payload, page_texts, toc_pages, allow_empty=True)
+                 for payload in payloads]
     if any(response["status"] == "review_required" for response in responses):
         return {"status": "review_required", "events": [], "collection_end": None, "warnings": [
             warning for response in responses for warning in response["warnings"]
@@ -379,6 +415,9 @@ def _detect_boundaries(
     for response in responses:
         for event in response["events"]:
             current = by_page.get(event["start_page"])
+            if current is not None and _heading_key(current["title"]) != _heading_key(event["title"]):
+                return {"status": "review_required", "events": [], "collection_end": None,
+                        "warnings": [f"conflicting event starts on physical page {event['start_page']}"]}
             if current is None or event["confidence"] > current["confidence"]:
                 by_page[event["start_page"]] = event
     boundaries = [response["collection_end"] for response in responses if response["collection_end"]]

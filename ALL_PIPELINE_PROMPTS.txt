@@ -22,7 +22,14 @@ boundaries. Return status review_required for ambiguous structure, including two
 physical page. Page numbers are physical 1-based PDF pages.
 
 The input encodes outline rows as [hierarchy_level, physical_page, bookmark_title] and page_context rows
-as [physical_page, extracted_text]. Return exactly one JSON object with these keys and no others:
+as [physical_page, extracted_text]. toc_candidates rows are [title, printed_page, physical_page];
+null physical pages are unresolved. The outline and TOC describe the whole document. Page context may
+be one batch of heading-centered excerpts. Verify starts and collection_end only on supplied context
+pages. Missing context for other pages is not ambiguity: those pages are checked in other batches.
+An excerpt separator [...] marks omitted text, not source evidence. A batch with no event starts may
+return pass with an empty events list. Keep geographic containers separate from their dated events;
+do not treat each internal subsection as an event or an internal section as collection_end.
+Return exactly one JSON object with these keys and no others:
 {"status":"pass","events":[{"title":"visible heading title","start_page":1,
 "heading_quote":"exact visible heading","confidence":0.99}],"collection_end":{"page":10,
 "heading_quote":"exact first post-collection heading"},"warnings":[]}. collection_end may be null.

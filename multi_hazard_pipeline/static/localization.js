@@ -7,7 +7,8 @@
   const render = state => {
     const info = state.info;
     $('#localization-status').textContent = state.status_label;
-    root.className = `panel status state-${info.status || 'none'}`;
+    root.classList.forEach(name => { if (name.startsWith('state-')) root.classList.remove(name); });
+    root.classList.add(`state-${info.status || 'none'}`);
     $('#localization-activity').textContent = info.activity || 'Choose a spatial package to begin.';
     $('#localization-counters').textContent = `${state.processed} of ${state.total} segment decisions saved · ${state.model_calls} model calls`;
     const progress = $('#localization-progress');

@@ -37,8 +37,13 @@ html { min-width: 320px; scroll-behavior: smooth; }
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: var(--paper);
-  background-image: url("topography.svg");
+  background-color: #f5f7fa;
+  background-image:
+    linear-gradient(rgb(250 251 253 / 82%), rgb(247 249 252 / 90%)),
+    url("terrain-relief.png");
+  background-position: center, center top;
+  background-repeat: no-repeat;
+  background-size: cover;
   background-attachment: fixed;
 }
 [hidden] { display: none !important; }
@@ -151,6 +156,7 @@ button[data-working="true"] { cursor: wait; }
 .upload-zone__title { font-size: .95rem; color: var(--ink); }
 input[type="file"] { width: 100%; padding: .55rem 0; color: var(--ink-soft); }
 input::file-selector-button { margin-right: .7rem; padding: .42rem .7rem; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink); cursor: pointer; font: inherit; font-weight: 650; }
+input::file-selector-button:hover { border-color: #b3c4be; background: #edf3f0; color: #263e36; }
 .upload-guidance { margin: .4rem 0 0; }
 summary { cursor: pointer; font-weight: 650; color: var(--ink-soft); }
 .advanced-input { margin-top: 1rem; border-top: 1px solid var(--line); }
@@ -435,6 +441,16 @@ dialog h2 { margin: 0; }
 .state-build_errors, .state-validation_errors { border-left-color: #c62828; }
 #localization-state.state-revision_required { border-left-color: #d97706; }
 .form-section h2 { display: flex; align-items: center; gap: .6rem; margin-top: 0; }
+.localization-page .panel { padding: 1.5rem 1.65rem; border-color: #dce1e9; border-radius: 10px; background: rgb(255 255 255 / 86%); backdrop-filter: blur(3px); box-shadow: 0 8px 26px rgb(33 46 70 / 5%); }
+.localization-page .form-section { margin: 1rem 0 1.2rem; }
+.localization-page .form-section > h2 { margin-bottom: .55rem; }
+.localization-page .form-section > .hint { max-width: 68rem; margin-bottom: 1.1rem; line-height: 1.55; }
+.localization-page .form-section > .upload-zone { margin-top: .85rem; }
+.localization-page .form-section > details { margin-top: 1rem; padding-top: .85rem; border-top: 1px solid #e4e7ec; }
+.localization-page .form-section > details > summary { padding-block: .15rem; }
+.localization-page .hero { max-width: 66rem; margin-bottom: 1.1rem; }
+.localization-page .steps { list-style: none; margin: 0 0 1.4rem; padding: 0; }
+.localization-page .steps li { margin: .35rem 0; line-height: 1.55; }
 .step-number { display: inline-grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: 50%; background: #226653; color: white; font-size: .95rem; flex: none; }
 .field-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 1rem; align-items: end; }
 .field-pair .or { margin: 0 0 1.4rem; }
@@ -456,6 +472,7 @@ dialog h2 { margin: 0; }
   .workflow-cards, .field-pair, .layer-row { grid-template-columns: 1fr; }
   .field-pair .or { margin: 0; }
   .site-nav .brand { flex-basis: 100%; }
+  .localization-page .panel { padding: 1.15rem; }
 }
 #localization-downloads .button { background: white; color: #226653; border: 1px solid #91b3a7; padding: .45rem .75rem; }
 #localization-downloads .button:hover { background: #f2f8f4; }
