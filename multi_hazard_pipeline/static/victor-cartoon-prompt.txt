@@ -1,0 +1,5 @@
+Built-in image_gen, transparent background, reference: Victor photo supplied 2026-11-12.
+Final asset: multi_hazard_pipeline/static/victor-cartoon.png
+
+Prompt:
+Use case: identity-preserve / style-transfer. Create one charming small cartoon caricature head-and-shoulders sticker of Victor, using the attached photograph as identity reference. Preserve recognizable dark wavy tousled hair, thick eyebrows, brown eyes, long face, gentle closed-mouth smile, youthful face, gray-green crewneck shirt. Tasteful hand-drawn editorial cartoon with slightly oversized head, friendly and flattering, clean outlines and warm colors. Front three-quarter portrait closely matching reference. Single isolated character centered with generous transparent padding, no background, no frame, no lettering, no balloon or props. Actual transparent background. This sticker will float at small size in a birthday website.
