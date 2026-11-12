@@ -83,7 +83,7 @@ function computeAnchor(g) {
 export function northArrow(host) {
   const el = document.createElement("div");
   el.className = "map-north"; el.setAttribute("role", "img"); el.setAttribute("aria-label", "North");
-  el.innerHTML = '<span>N</span><svg viewBox="0 0 24 32" width="24" height="32" aria-hidden="true"><path d="M12 2L21 29L12 23Z" fill="#fff" stroke="#263e36"/><path d="M12 2L3 29L12 23Z" fill="#263e36" stroke="#263e36"/></svg>';
+  el.innerHTML = '<span>N</span><svg viewBox="0 0 16 20" width="14" height="18" aria-hidden="true"><path d="M8 2L14 18L8 14L2 18Z" fill="#263e36"/></svg>';
   host.append(el); return el;
 }
 export const EOX_URL = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg";

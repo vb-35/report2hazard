@@ -181,6 +181,7 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
       }
       box.append(card);
       const map = L.map(el, { zoomSnap: .25 });
+      northArrow(el);
       const entry = { map, keys: pane.keys, hd, m: pane.m, base: null, ctx: null, parts: null };
       maps.push(entry);
       map.on("zoomend moveend resize", () => layoutLabels(entry));
@@ -190,7 +191,6 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
         syncing = false;
       });
     }
-    northArrow(box);
     refreshBase(); refreshLayers(true);
   }
 

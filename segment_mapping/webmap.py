@@ -281,8 +281,8 @@ L.control.layers(bases,overlays,{collapsed:false,position:'topleft'}).addTo(map)
 L.control.scale().addTo(map);
 var north=L.control({position:'topright'});
 north.onAdd=function(){var el=L.DomUtil.create('div');el.setAttribute('role','img');el.setAttribute('aria-label','North');
-  el.style.cssText='width:36px;height:58px;display:grid;place-items:center;background:#fffffff0;border:1px solid #b6c2bb;border-radius:6px;font:700 12px system-ui;color:#263e36;pointer-events:none';
-  el.innerHTML='<span>N</span><svg viewBox="0 0 24 32" width="24" height="32"><path d="M12 2L21 29L12 23Z" fill="white" stroke="#263e36"/><path d="M12 2L3 29L12 23Z" fill="#263e36"/></svg>';return el;};
+  el.style.cssText='width:24px;height:36px;display:grid;place-items:center;background:#fffffff0;border:1px solid #b6c2bb;border-radius:4px;font:700 10px system-ui;color:#263e36;pointer-events:none';
+  el.innerHTML='<span>N</span><svg viewBox="0 0 16 20" width="14" height="18"><path d="M8 2L14 18L8 14L2 18Z" fill="#263e36"/></svg>';return el;};
 north.addTo(map);
 var lg=L.control({position:'bottomleft'});
 function esc(x){return String(x).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
@@ -334,8 +334,12 @@ def upgrade_saved_map(document: str) -> str:
     """Apply viewer controls to previously generated maps without changing saved results."""
     if "var map=L.map('map'" not in document:
         return document
-    if "var north=L.control" not in document:
-        compass = _TEMPLATE.split("var north=L.control", 1)[1].split("north.addTo(map);", 1)[0]
+    compass = _TEMPLATE.split("var north=L.control", 1)[1].split("north.addTo(map);", 1)[0]
+    if "var north=L.control" in document:
+        start = document.index("var north=L.control")
+        end = document.index("north.addTo(map);", start) + len("north.addTo(map);")
+        document = document[:start] + "var north=L.control" + compass + "north.addTo(map);" + document[end:]
+    else:
         document = document.replace("L.control.scale().addTo(map);",
             "L.control.scale().addTo(map);\nvar north=L.control" + compass + "north.addTo(map);")
     if 'Sentinel-2 cloudless (AlpTap)' not in document:
