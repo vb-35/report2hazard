@@ -7,17 +7,11 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='shell.css') }}">
   {% block styles %}{% endblock %}
-  <link rel="stylesheet" href="{{ url_for('static', filename='birthday.css') }}">
-  <script src="{{ url_for('static', filename='theme-config.js') }}"></script>
-  <script>document.documentElement.dataset.theme = 'original'; try { if (window.WORKSPACE_THEME === 'birthday' && localStorage.getItem('workspace-theme-victor-v1') !== 'original' && sessionStorage.getItem('victor-birthday-revealed-v2')) document.documentElement.dataset.theme = 'birthday'; } catch (_) { /* Keep the original appearance until the first click. */ }</script>
 </head>
 {% set endpoint = request.endpoint or '' %}
 {% set workflow = 'compare' if endpoint in ['compare_localizations', 'import_agent_localization', 'save_agent_localization'] else 'localization' if endpoint in ['new_localization', 'start_provided_localization'] or (endpoint in ['localization_detail', 'start_localization'] and test) else 'reports' %}
 <body class="{% block body_class %}{% endblock %}" data-workflow="{{ workflow }}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
-  <div id="birthday-scene" aria-hidden="true"></div>
-  <section class="birthday-greeting" aria-label="Birthday wishes"><span>A little celebration</span><h1>Happy birthday Victor</h1><p>All the best!</p></section>
-  <div class="birthday-controls"><button type="button" id="birthday-motion">Pause animation</button><button type="button" id="birthday-restore">Restore old background</button></div>
   <header class="site-header">
     <div class="site-header__inner">
       <a class="brand" href="{{ url_for('index') }}" aria-label="Multi-hazard Review home">
@@ -35,6 +29,5 @@
   <main id="main-content">{% block content %}{% endblock %}</main>
   <footer class="site-footer"><span>Local review environment</span><span>One pipeline task runs at a time</span></footer>
   {% block scripts %}{% endblock %}
-  <script src="{{ url_for('static', filename='birthday.js') }}" defer></script>
 </body>
 </html>
