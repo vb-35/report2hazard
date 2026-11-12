@@ -315,7 +315,7 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
         requested = request.args.getlist("runs")
         chosen = request.args.get("report") or next(
             (g["signature"] for g in groups if any(run["run_id"] in requested for run in g["runs"])), None)
-        group = next((g for g in groups if g["signature"] == chosen), groups[0] if groups else None)
+        group = next((g for g in groups if g["signature"] == chosen), None)
         ids = [run["run_id"] for run in group["runs"]] if group else []
         # Every run of the report is shown unless the page was asked for some of them.
         selected = [run_id for run_id in requested if run_id in ids] or ids[:MAX_COMPARED]
@@ -376,7 +376,8 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
 
         try:
             response = jsonify(terrain_data(root, request.args.getlist("runs"),
-                                           source=request.args.get("source", "run"), upload=request.files.get("dem")))
+                                           source=request.args.get("source", "run"), upload=request.files.get("dem"),
+                                           extent=request.args.get("extent", "catchment")))
         except PipelineError as exc:
             response = jsonify(error=str(exc))
             response.status_code = 400

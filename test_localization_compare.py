@@ -140,13 +140,49 @@ class LocalizationCompareTests(TestCase):
         with self.assertRaisesRegex(PipelineError, "different reports"):
             comparison_data(self.results, [self.base, other.name])
 
+    def test_report_picker_clears_and_switches_without_removing_runs(self):
+        from multi_hazard_pipeline import web
+        from multi_hazard_pipeline.core import read_json, write_json
+        from multi_hazard_pipeline.localization_compare import comparable_groups
+
+        other = self.results / "other-report"
+        shutil.copytree(self.results / self.base, other)
+        config_path = other / "localization" / "run.json"
+        config = read_json(config_path)
+        config["segments"] = config["segments"][:1]
+        write_json(config_path, config)
+        groups = comparable_groups(self.results)
+        self.assertEqual(len(groups), 2)
+        client = web.create_app(self.results).test_client()
+
+        picker = client.get("/localization/compare").get_data(as_text=True)
+        self.assertIn("Choose a report", picker)
+        self.assertIn('href="/localization/import">Open another ZIP', picker)
+        self.assertNotIn('id="cmp"', picker)
+        for group in groups:
+            selected = client.get("/localization/compare", query_string={"report": group["signature"]}).get_data(as_text=True)
+            self.assertIn('href="/localization/compare">Clear selection', selected)
+            self.assertIn('id="cmp"', selected)
+            for run in group["runs"]:
+                self.assertIn(f'value="{run["run_id"]}" checked', selected)
+            self.assertIn('href="/localization/import">Open another ZIP', selected)
+            cleared = client.get("/localization/compare").get_data(as_text=True)
+            self.assertNotIn('id="cmp"', cleared)
+            self.assertIn(group["signature"], cleared)
+
+        self.assertEqual(len(comparable_groups(self.results)), 2)
+        inferred = client.get("/localization/compare", query_string={"runs": self.base}).get_data(as_text=True)
+        self.assertIn(f'value="{self.base}" checked', inferred)
+        stale = client.get("/localization/compare?report=missing").get_data(as_text=True)
+        self.assertNotIn('id="cmp"', stale)
+
     def test_interface_imports_lists_and_serves_the_comparison(self):
         from multi_hazard_pipeline import web
         from multi_hazard_pipeline.localization_compare import comparable_groups
 
         report = comparable_groups(self.results)[0]["signature"]
         client = web.create_app(self.results).test_client()
-        page = client.get("/localization/compare")  # the newest report opens with all its runs
+        page = client.get(f"/localization/compare?report={report}")
         self.assertEqual(page.status_code, 200)
         self.assertIn(f'value="{self.base}" checked', page.get_data(as_text=True))
         self.assertIn(report, client.get("/localization/import").get_data(as_text=True))
@@ -217,6 +253,34 @@ class LocalizationCompareTests(TestCase):
         self.assertIn(f"report={report}&amp;runs={outcome['run_id']}", index)  # an agent card opens just that run
         self.assertEqual(client.get("/localization/terrain?runs=missing").status_code, 400)
 
+    def test_global_terrain_streams_without_building_a_local_grid(self):
+        from unittest.mock import patch
+        from multi_hazard_pipeline import web
+        from multi_hazard_pipeline.localization_compare import comparison_data
+        expected = comparison_data(self.results, [self.base])["reports"][0]
+        client = web.create_app(self.results).test_client()
+        with patch("multi_hazard_pipeline.localization_compare._terrain_grid") as grid:
+            response = client.get(f"/localization/terrain?runs={self.base}&source=online&extent=full")
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertTrue(data["terrain"]["streaming"])
+            self.assertEqual(data["runs"], expected["runs"])  # global renderer needs WGS84
+            self.assertEqual(data["context"], expected["context"])
+            grid.assert_not_called()
+        self.assertEqual(client.get(f"/localization/terrain?runs={self.base}&extent=invalid").status_code, 400)
+
+    def test_full_local_terrain_matches_file_extent_and_warns(self):
+        import rasterio
+        from rasterio.warp import transform_bounds
+        from multi_hazard_pipeline.localization_compare import _terrain_grid, dem_file
+        base = self.results / self.base
+        grid = _terrain_grid(base, extent="full")
+        with rasterio.open(dem_file(base)) as ds:
+            expected = transform_bounds(ds.crs, grid["crs"], *ds.bounds)
+        self.assertEqual(grid["bounds"], [round(v, 1) for v in expected])
+        self.assertIn("finite coverage", grid["notice"])
+        self.assertLessEqual(max(grid["nx"], grid["ny"]), 200)
+
     def test_terrain_sources_without_a_run_dem(self):
         from unittest.mock import patch
         from multi_hazard_pipeline import web
@@ -237,7 +301,7 @@ class LocalizationCompareTests(TestCase):
             with patch("multi_hazard_pipeline.terrain_sources.fetch_online_dem", side_effect=fake_fetch) as fetch:
                 first = client.get(url + "&source=online")
                 self.assertEqual(first.status_code, 200, first.get_json())
-                self.assertIn("Copernicus", first.get_json()["terrain"]["attribution"])
+                self.assertIn("Mapzen Terrain Tiles", first.get_json()["terrain"]["attribution"])
                 self.assertEqual(client.get(url + "&source=online").status_code, 200)
                 self.assertEqual(fetch.call_count, 1)
             uploaded = client.post(url + "&source=upload", data={"dem": (io.BytesIO(hidden.read_bytes()), "dem.tif")})

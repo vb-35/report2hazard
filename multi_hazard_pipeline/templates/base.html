@@ -6,6 +6,7 @@
   <title>{% block title %}Multi-hazard review{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='shell.css') }}">
+  <script src="{{ url_for('static', filename='shell.js') }}" defer></script>
   {% block styles %}{% endblock %}
 </head>
 {% set endpoint = request.endpoint or '' %}

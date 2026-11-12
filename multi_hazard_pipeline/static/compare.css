@@ -156,6 +156,84 @@
 .cmp-maps { position: relative; }
 .map-north { position: absolute; top: 10px; right: 10px; z-index: 800; width: 24px; height: 36px; display: grid; justify-items: center; align-content: center; border: 1px solid #b6c2bb; border-radius: 4px; background: #fffffff0; pointer-events: none; font: 700 10px/12px system-ui; color: #263e36; }
 .map-north svg { transform: rotate(var(--north-bearing,0deg)); }
+.map-north-3d { width: 32px; height: 46px; font-size: 12px; line-height: 15px; }
+.map-north-3d svg { width: 19px; height: 24px; }
+.terrain-scale { position: absolute; bottom: 24px; left: 10px; padding: 5px 7px; border-radius: 4px; background: #fffffff0; color: #263e36; pointer-events: none; font: 12px/1.3 system-ui; }
+.terrain-scale-bar { box-sizing: border-box; height: 7px; border: 2px solid #263e36; border-top: 0; }
+.terrain-scale small { display: block; margin-top: 2px; font-size: 9px; }
 .terrain-attribution { position: absolute; bottom: 0; right: 0; max-width: 90%; padding: 2px 5px; background: #ffffffd9; color: #35483e; font: 10px/1.4 system-ui; }
 #terrain-sources input[type="file"] { width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media(max-width: 700px) { .index-page .cmp-runs label { grid-template-columns: 16px 28px 58px minmax(0,1fr); } .cmp-runs .cmp-when { grid-column: 4; } .cmp-only { max-width: 50px; } }
+
+/* Shared map toolbar: controls share font metrics, label spacing and height. */
+.map-settings-toolbar, .cmp .map-settings-toolbar { display:flex; flex-direction:column; align-items:stretch; gap:16px; padding:16px; border:1px solid #dde5e7; border-radius:12px; background:#fff; font-family:inherit; }
+.map-display-options { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; }
+.map-settings-row { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px; min-width:0; }
+.map-settings-row #terrain-sources, .map-settings-row .terrain-source-bar { display:contents; }
+.map-settings-row #terrain-sources[hidden] { display:none; }
+.map-select-field, .cmp .map-select-field { display:flex; flex-direction:column; align-items:stretch; flex:1 1 210px; min-width:0; gap:6px; margin:0; color:#526477; font-family:inherit; font-size:11px; font-weight:600; line-height:16px; letter-spacing:.025em; }
+.map-select-field > span { display:block; }
+.map-select-field select, .cmp .map-select-field select { box-sizing:border-box; height:42px; min-height:42px; width:100%; min-width:0; max-width:100%; margin:0; padding:8px 32px 8px 12px; background-color:#fff; border:1px solid #b9cbce; border-radius:9px; color:#183c45; box-shadow:0 2px 5px #183c4508; font-family:inherit; font-size:13px; font-weight:500; line-height:20px; letter-spacing:normal; cursor:pointer; }
+.map-select-field select:focus-visible { outline:3px solid #27a9be66; outline-offset:2px; }
+.cmp .map-display-options .cmp-lbl, .cmp .map-display-options .cmp-tog, .index-page .cmp .map-display-options .cmp-tab { font-family:inherit; font-size:12px; font-weight:500; line-height:20px; letter-spacing:normal; }
+.cmp .map-display-options .cmp-group-btns { gap:4px; align-items:center; }
+.cmp .map-display-options .cmp-lbl { margin:0 4px 0 0; }
+.cmp .map-display-options .cmp-tab { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; height:34px; min-height:34px; margin:0; padding:6px 12px; }
+.cmp .map-display-options .cmp-tog { display:inline-flex; align-items:center; gap:7px; margin:0; min-height:34px; white-space:nowrap; }
+.cmp .map-display-options input[type="checkbox"] { width:14px; height:14px; margin:0; flex:none; }
+.map-settings-row .terrain-discover { align-self:flex-end; flex:0 1 auto; margin:0; }
+.map-settings-row .terrain-discover summary { box-sizing:border-box; display:flex; align-items:center; gap:8px; height:42px; padding:8px 12px; border:1px solid #dce5e7; border-radius:9px; font-family:inherit; font-size:12px; font-weight:500; line-height:20px; list-style:none; white-space:nowrap; }
+.map-settings-row .terrain-discover summary::before { content:"+"; font-size:16px; }
+.map-settings-row .terrain-discover[open] summary::before { content:"-"; }
+.map-settings-row .terrain-discover summary::-webkit-details-marker { display:none; }
+.map-settings-row .terrain-source-status { flex:1 0 100%; margin:0; padding:0; }
+.map-settings-row .terrain-source-status:empty { display:none; }
+.map-settings-row .terrain-notice { flex:1 1 100%; margin:0; }
+.terrain-source-status { padding:0 16px; margin:8px 0; color:#60716c; font-size:11px; overflow-wrap:anywhere; }
+.terrain-source-status[data-error] { color:#a03527; }
+.terrain-notice { display:flex; align-items:start; gap:12px; margin:10px 16px; padding:12px 14px; background:#fff8e8; border:1px solid #e8d5a2; border-radius:9px; color:#6d531e; font:12px/1.5 system-ui; }
+.terrain-notice[hidden], .terrain-file[hidden] { display:none; }
+.terrain-notice button { margin-left:auto; border:0; padding:0 5px; background:none; color:inherit; cursor:pointer; font-size:20px; }
+.terrain-discover { position:relative; font-size:12px; align-self:center; }
+.terrain-discover summary { cursor:pointer; color:#226678; padding:8px; }
+.terrain-discover > div { position:absolute; z-index:1100; top:100%; right:0; width:270px; max-width:80vw; display:grid; gap:12px; padding:16px; background:white; border:1px solid #c8d8da; border-radius:12px; box-shadow:0 12px 32px #183c4526; }
+.terrain-discover small { color:#637376; }
+.cmp .terrain .world-terrain, .terrain3d-box .world-terrain { position:absolute; inset:0; width:100%; height:100%; }
+.world-terrain .maplibregl-ctrl-top-right { top:52px; }
+@media(max-width:700px) { .map-select-field, .cmp .map-select-field { flex-basis:100%; } .map-display-options { gap:8px 16px; } .map-settings-row .terrain-discover { flex-basis:100%; } .terrain-discover > div { left:0; right:auto; } }
+
+#terrain-sources input[hidden] { display:none; }
+
+/* Keep the flat-map toolbar compact when elevation controls are absent. */
+.cmp:not([data-view="3d"]) .map-settings-toolbar { flex-direction:row; align-items:flex-end; flex-wrap:wrap; gap:12px 24px; }
+.cmp:not([data-view="3d"]) .map-settings-row { flex:0 1 270px; }
+.cmp:not([data-view="3d"]) .map-select-field { flex:0 1 270px; }
+.reference-info { position:relative; margin-left:-16px; }
+.reference-info summary { display:grid; place-items:center; width:20px; height:20px; border:1px solid #bdc8d0; border-radius:50%; list-style:none; color:#526477; font:600 12px/1 system-ui; cursor:pointer; }
+.reference-info summary::-webkit-details-marker { display:none; }
+.reference-info p { position:absolute; z-index:1200; top:24px; left:0; width:300px; max-width:70vw; margin:0; padding:14px; border:1px solid #c8d2db; border-radius:10px; background:#fff; box-shadow:0 8px 24px #1b2d4526; color:#4a5c6b; font-size:12px; line-height:1.6; }
+.index-page .cmp-runs { grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr)); gap:12px; }
+.index-page .cmp-runs li { display:flex; flex-direction:column; align-items:stretch; gap:0; padding:0; border:1px solid #dae0e5; border-radius:10px; background:#fff; overflow:hidden; }
+.index-page .cmp-runs li:has(input:checked) { border-color:var(--workflow-border); background:var(--workflow-active); }
+.index-page .cmp-runs li > label { display:grid; grid-template-columns:16px 30px auto minmax(0,1fr); gap:8px; padding:14px; border:0; border-radius:0; background:transparent; }
+.index-page .cmp-runs label:has(input:checked) { background:transparent; }
+.cmp-runs .run-identity { grid-column:1 / -1; grid-row:2; }
+.cmp-runs .run-identity strong { font-size:13px; line-height:1.5; }
+.cmp-runs .cmp-when { grid-column:1 / -1; grid-row:3; font-size:11px; }
+.index-page .cmp-runs .cmp-only { align-self:flex-end; max-width:none; padding:0 14px 12px; font-size:11px; }
+.terrain-navigation { position:absolute; left:10px; bottom:88px; z-index:850; width:max-content; max-width:calc(100% - 20px); border:1px solid #becbd4; border-radius:10px; background:#fffffff5; box-shadow:0 3px 12px #25334720; color:#263c4d; font:12px/1.4 system-ui; }
+.terrain-navigation > summary { display:flex; align-items:center; gap:14px; padding:9px 12px; cursor:pointer; list-style:none; font-weight:600; }
+.terrain-navigation > summary::-webkit-details-marker { display:none; }
+.terrain-navigation-body { width:208px; padding:0 10px 10px; }
+.terrain-navigation-group { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:6px; }
+.terrain-navigation-group > div { display:flex; gap:4px; }
+.index-page .terrain-navigation button { display:grid; place-items:center; min-width:30px; height:30px; min-height:30px; margin:0; padding:0 6px; border:1px solid #ccd6de; border-radius:6px; background:#f5f7fa; color:#263c4d; font:600 13px/1 system-ui; cursor:pointer; }
+.index-page .terrain-navigation button:hover { background:#e2eaf4; border-color:#9caec6; }
+.terrain-navigation p { margin:10px 0 0; color:#607080; font-size:10px; line-height:1.6; }
+.terrain-navigation[open] > summary { border-bottom:1px solid #e0e6ec; }
+.cmp aside .item.active { background:var(--workflow-active); }
+.index-page .cmp .cmp-tab:hover:not(:disabled) { background:var(--workflow-active); border-color:var(--workflow-border); color:var(--workflow-ink); }
+.index-page .cmp .cmp-tab[aria-pressed="true"]:hover:not(:disabled) { background:var(--workflow-accent); color:white; }
+@media(max-width:700px) { .cmp:not([data-view="3d"]) .map-settings-row { flex-basis:100%; } .reference-info p { left:-120px; } }
+
+.cmp:not([data-view="3d"]) .map-display-options { min-height:42px; }

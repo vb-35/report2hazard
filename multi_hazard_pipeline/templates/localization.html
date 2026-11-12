@@ -50,17 +50,19 @@
 <section class="panel upload-panel page-section terrain3d" aria-labelledby="terrain-heading" data-terrain-url="{{ terrain_url }}">
 <div class="section-heading"><h2 id="terrain-heading">3D view</h2>
 <button type="button" class="button secondary" id="terrain-reset">Reset view</button></div>
+<div class="map-settings-toolbar"><div class="map-settings-row">
+<label class="map-select-field"><span>Basemap</span><select id="terrain-basemap"><option value="ortho">Orthophoto (basemap.at)</option><option value="osm" selected>OpenStreetMap</option>
+<option value="grau">basemap.at grey</option><option value="eox">EOxCloudless 2025 (Sentinel-2)</option><option value="none">Hillshade only</option></select></label>
 <div id="terrain-sources"></div>
+</div></div>
 <div class="terrain3d-tools">
-<label>Basemap<select id="terrain-basemap"><option value="ortho">Orthophoto (basemap.at)</option><option value="osm">OpenStreetMap</option>
-<option value="grau">basemap.at grey</option><option value="eox">Sentinel-2 cloudless (AlpTap)</option><option value="none">Hillshade only</option></select></label>
 <label>Terrain exaggeration<input id="terrain-exag" type="range" min="1" max="3" step="0.25" value="1.5"></label>
 <label class="checkbox"><input type="checkbox" id="terrain-labels" checked>Part labels</label>
 </div>
 <fieldset class="terrain-segment-picker"><legend>Segments <span id="terrain-selection-count" role="status"></span></legend>
 <div class="selection-actions"><button class="button secondary" type="button" id="terrain-select-all">Select all</button><button class="button secondary" type="button" id="terrain-select-none">Clear</button></div>
 <div id="terrain-segments" class="terrain-segment-options"></div></fieldset>
-<p class="hint">Choose the run DEM, retrieve online terrain, or upload an elevation GeoTIFF (heights in metres). Terrain is used for viewing only. Drag to rotate, right-drag to pan, scroll to zoom.</p>
+<p class="hint">Select elevation and extent above. Choosing a GeoTIFF loads it immediately. Terrain is used for viewing only. Drag to rotate, right-drag to pan, scroll to zoom.</p>
 <div class="terrain3d-box" id="terrain-box"><p class="cmp-loading">Loading the terrain…</p></div>
 <div class="cmp-keys" id="terrain-map-key" role="group" aria-label="Map legend"></div>
 </section>

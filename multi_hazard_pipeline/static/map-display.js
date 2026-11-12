@@ -86,5 +86,5 @@ export function northArrow(host) {
   el.innerHTML = '<span>N</span><svg viewBox="0 0 16 20" width="14" height="18" aria-hidden="true"><path d="M8 2L14 18L8 14L2 18Z" fill="#263e36"/></svg>';
   host.append(el); return el;
 }
-export const EOX_URL = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg";
-export const EOX_ATTR = 'EOxCloudless <a href="https://cloudless.eox.at">EOX</a> · Contains modified Copernicus Sentinel data 2024 · <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA</a>';
+export const EOX_URL = "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg";
+export const EOX_ATTR = 'EOxCloudless <a href="https://cloudless.eox.at">EOX</a> · Contains modified Copernicus Sentinel data 2025 · <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA</a>';

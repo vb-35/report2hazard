@@ -6,7 +6,7 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const ROLE = { event_extent: "extent", location: "location", search_area: "search area" };
-  let DATA, REP, S = { view: "side", segments: new Set(), visible: new Set(), run3d: null }, maps = [], syncing = false, view3d = null, token3d = 0;
+  let DATA, REP, S = { view: "3d", segments: new Set(), visible: new Set(), run3d: null }, maps = [], syncing = false, view3d = null, token3d = 0;
   const selected = f => S.segments.has(f.properties.seg);
 
   const model = k => DATA.models.find(m => m.key === k);
@@ -129,8 +129,8 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
       <label class="cmp-lbl">Terrain exaggeration<input id="exag3d" type="range" min="1" max="3" step="0.25" value="1.5"></label>
       <button type="button" class="cmp-tab" id="reset3d">Reset view</button>
       <span class="stat" id="stat3d"></span>
-      <span class="sub">Drag to rotate, right-drag to pan, scroll to zoom. Choose a terrain source below. Terrain is used for viewing only.</span></div>
-      <div id="terrain-sources"></div><div class="terrain" id="terrain3d"><p class="cmp-loading">Loading the terrain…</p></div>`;
+      <span class="sub">Drag to rotate, right-drag to pan, scroll to zoom. Choose elevation and extent in the toolbar above. Terrain is used for viewing only.</span></div>
+      <div class="terrain" id="terrain3d"><p class="cmp-loading">Loading the terrain…</p></div>`;
     box.append(card);
     update3dStat();
     import(root.dataset.terrainModule).then(mod => {
@@ -161,6 +161,12 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
     maps.forEach(x => x.map.remove()); maps = [];
     if (view3d) { view3d.dispose(); view3d = null; }
     token3d++;
+    const sources = $("terrain-sources");
+    sources.replaceChildren();
+    sources.hidden = S.view !== "3d";
+    root.dataset.view = S.view;
+    document.querySelectorAll("#viewTabs .cmp-tab").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === S.view)));
+    explainReferenceLayers();
     const box = $("maps"); box.innerHTML = ""; box.className = "cmp-maps" + (S.view === "overlay" ? " overlay" : "");
     if (S.view === "3d") { build3d(); return; }
     const panes = S.view === "overlay" ? [{ keys: DATA.models.map(m => m.key) }] : DATA.models.map(m => ({ keys: [m.key], m }));
@@ -181,6 +187,7 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
       }
       box.append(card);
       const map = L.map(el, { zoomSnap: .25 });
+      L.control.scale({ imperial: false, maxWidth: 120 }).addTo(map);
       northArrow(el);
       const entry = { map, keys: pane.keys, hd, m: pane.m, base: null, ctx: null, parts: null };
       maps.push(entry);
@@ -282,11 +289,11 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
         segs.map((s, i) => `<td class="c">${st[i] === "located" ? `<span class="cell" style="background:${m.color}">${partsOf(run, s.id).length}</span>`
           : `<span class="cell unres" style="border-color:${m.color}">–</span>`}</td>`).join("") + `</tr>`;
     }).join("");
-    const segRows = segs.map(s => `<tr class="segrow" data-seg="${esc(s.id)}"><td class="c"><b>${esc(s.id)}</b></td><td>${esc(s.process)}</td>` +
+    const segRows = segs.map((s, index) => `<tr class="segrow" data-seg="${esc(s.id)}"><td class="c"><b>${index + 1}</b></td><td class="c">${esc(s.id)}</td><td>${esc(s.process)}</td>` +
       `<td>${esc(s.category)}</td><td><div class="dots">${dotsFor(s.id)}</div></td></tr>`).join("");
-    return `<h2>${esc(REP.name)}: overview</h2><div class="seginfo">Numbers are mapped parts per segment; a dash means unresolved.</div>` +
+    return `<h2>${esc(REP.name)}: overview</h2><div class="seginfo">Numbers are mapped parts per segment; a dash means unresolved. Source IDs come from the imported table and match map labels and exports.</div>` +
       `<div class="tablewrap"><table class="matrix">${head}${rows}</table></div>` +
-      `<h2 style="margin-top:14px">Segments</h2><div class="tablewrap"><table class="matrix"><tr><th>#</th><th>Process</th><th>Category</th><th>Parts per run</th></tr>${segRows}</table></div>`;
+      `<h2 style="margin-top:14px">Segments</h2><div class="tablewrap"><table class="matrix"><tr><th>#</th><th title="Original ID from the imported segment table; matches map labels and exports">Source ID</th><th>Process</th><th>Category</th><th>Parts per run</th></tr>${segRows}</table></div>`;
   }
 
   function buildCompare() {
@@ -316,6 +323,15 @@ import { partStyle, mapLegend, geometryAnchor, northArrow, EOX_URL, EOX_ATTR } f
     }
     if (view3d) view3d.setSegments([...S.segments]);
     update3dStat();
+  }
+
+  function explainReferenceLayers() {
+    if (!REP) return;
+    const names = {catchment:"Catchment boundary", streams:"Streams", roads:"Roads", places:"Place names"};
+    const available = Object.entries(names).filter(([key]) => (S.view !== "3d" || key !== "places") && REP.context[key]?.length);
+    const description = available.length ? available.map(([key, name]) => `${name} (${REP.context[key].length} ${REP.context[key].length === 1 ? "feature" : "features"})`).join(", ") : "No reference layers available for this view";
+    $("ctx").parentElement.title = description + ". From this report's imported spatial package; surrounding features are clipped to 2.5 km beyond the catchment.";
+    $("reference-description").textContent = description + ". These layers come from the report's imported spatial package, independently of the basemap and elevation source. Surrounding features are clipped to 2.5 km beyond the catchment. The toggle shows or hides these reference features.";
   }
 
   function keys() {

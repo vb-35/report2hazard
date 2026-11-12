@@ -13,6 +13,14 @@
   <h1>Compare localizations</h1>
   <p>Choose a report to see every localization of it side by side: pipeline runs, and agent runs imported for it.</p>
 </header>
+<section class="panel upload-panel page-section" aria-labelledby="report-picker-heading">
+<div class="upload-panel__heading"><h2 id="report-picker-heading">{{ 'Selected report: ' ~ (group.event or 'Unnamed report') if group else 'Choose a report' }}</h2>
+<span class="cmp-actions">
+{% if group %}<a class="button secondary" href="{{ url_for('compare_localizations') }}">Clear selection</a>{% endif %}
+<a class="button" href="{{ url_for('import_agent_localization') }}">Open another ZIP</a>
+</span></div>
+<p class="hint">Choose a saved report below, or import a ZIP to add another report. Clearing the selection keeps imported reports and runs saved.</p>
+</section>
 {% if not groups %}
 <section class="panel upload-panel page-section"><p>No localization run has map outputs yet. Run a localization, or
 <a href="{{ url_for('import_agent_localization') }}">import runs</a> someone sent you.</p></section>
@@ -24,6 +32,7 @@
 <span>{{ g.segments }} segments · {{ g.runs|length }} run{{ '' if g.runs|length == 1 else 's' }}</span></a>
 {% endfor %}
 </nav>
+{% if group %}
 <form class="panel upload-panel page-section cmp-pick" method="get" action="{{ url_for('compare_localizations') }}">
 <input type="hidden" name="report" value="{{ group.signature }}">
 <div class="upload-panel__heading"><h2>{{ group.event }} runs</h2>
@@ -45,23 +54,29 @@
 {% if selected %}
 <section class="cmp" id="cmp" data-url="{{ data_url }}" data-terrain-url="{{ terrain_url }}"
          data-terrain-module="{{ url_for('static', filename='terrain3d.js') }}">
-<div class="cmp-toolbar">
+<div class="cmp-toolbar map-settings-toolbar">
+  <div class="map-display-options">
   <div class="cmp-group-btns" id="viewTabs"><span class="cmp-lbl">View</span>
-    <button type="button" class="cmp-tab" data-view="side" aria-pressed="true">Side by side</button>
+    <button type="button" class="cmp-tab" data-view="side" aria-pressed="false">Side by side</button>
     <button type="button" class="cmp-tab" data-view="overlay" aria-pressed="false">Overlay</button>
-    <button type="button" class="cmp-tab" data-view="3d" aria-pressed="false">3D</button>
+    <button type="button" class="cmp-tab" data-view="3d" aria-pressed="true">3D</button>
   </div>
-  <label class="cmp-lbl">Basemap
+  <label class="cmp-tog"><input type="checkbox" id="ctx" checked> Reference layers</label>
+  <details class="reference-info"><summary aria-label="About reference layers" title="Where these layers come from">i</summary><p id="reference-description"></p></details>
+  <label class="cmp-tog"><input type="checkbox" id="others"> Other segments</label>
+  <label class="cmp-tog"><input type="checkbox" id="labels" checked> Part labels</label>
+  </div>
+  <div class="map-settings-row">
+  <label class="cmp-lbl map-select-field"><span>Basemap</span>
     <select id="basemap">
       <option value="osm">OpenStreetMap</option>
       <option value="grau">basemap.at grey</option>
       <option value="ortho">basemap.at orthophoto</option>
-      <option value="eox">Sentinel-2 cloudless (AlpTap)</option>
+      <option value="eox">EOxCloudless 2025 (Sentinel-2)</option>
       <option value="none">None</option>
     </select></label>
-  <label class="cmp-tog"><input type="checkbox" id="ctx" checked> GIS context</label>
-  <label class="cmp-tog"><input type="checkbox" id="others"> Other segments</label>
-  <label class="cmp-tog"><input type="checkbox" id="labels" checked> Part labels</label>
+    <div id="terrain-sources" hidden></div>
+  </div>
 </div>
 <p class="cmp-loading" id="cmpStatus">Loading the runs…</p>
 <div class="cmp-layout" hidden id="cmpBody">
@@ -73,6 +88,7 @@
   </div>
 </div>
 </section>
+{% endif %}
 {% endif %}
 {% endif %}
 {% endblock %}

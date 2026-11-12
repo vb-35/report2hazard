@@ -197,11 +197,12 @@ def build_map_data(run: Run, popup_html, title: str, context: list[tuple[str, ob
             lon, lat = t.transform(p.x, p.y)
             tk.append({"label": html.escape(str(label)), "latlng": [lat, lon]})
     basemaps = run.config.get("basemaps") or [OSM_BASEMAP, ESRI_IMAGERY]
-    basemaps = list(basemaps)
-    if not any(bm.get("name") == "Sentinel-2 cloudless (AlpTap)" for bm in basemaps):
-        basemaps.append(dict(name="Sentinel-2 cloudless (AlpTap)",
-            url="https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg",
-            attr='EOxCloudless <a href="https://cloudless.eox.at">EOX</a> · Contains modified Copernicus Sentinel data 2024 · CC BY-NC-SA', max_zoom=19, max_native_zoom=14))
+    basemaps = [bm for bm in basemaps if "s2cloudless-" not in bm.get("url", "")
+                and "cloudless" not in bm.get("name", "").lower()]
+    if not any(bm.get("name") == "EOxCloudless 2025 (Sentinel-2)" for bm in basemaps):
+        basemaps.append(dict(name="EOxCloudless 2025 (Sentinel-2)",
+            url="https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg",
+            attr='EOxCloudless <a href="https://cloudless.eox.at">EOX</a> · Contains modified Copernicus Sentinel data 2025 · CC BY-NC-SA', max_zoom=19, max_native_zoom=14))
     tiles = []
     for bm in basemaps:
         url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png" if bm["url"] == "OpenStreetMap" else bm["url"]
@@ -334,6 +335,11 @@ def upgrade_saved_map(document: str) -> str:
     """Apply viewer controls to previously generated maps without changing saved results."""
     if "var map=L.map('map'" not in document:
         return document
+    # Refresh imagery names and URLs in saved viewers as well as new maps.
+    import re
+    document = re.sub(r"Sentinel-2 cloudless \([^)]*\)", "EOxCloudless 2025 (Sentinel-2)", document)
+    document = re.sub(r"s2cloudless-\d{4}_3857", "s2cloudless-2025_3857", document)
+    document = document.replace("Sentinel data 2024", "Sentinel data 2025")
     compass = _TEMPLATE.split("var north=L.control", 1)[1].split("north.addTo(map);", 1)[0]
     if "var north=L.control" in document:
         start = document.index("var north=L.control")
@@ -342,10 +348,10 @@ def upgrade_saved_map(document: str) -> str:
     else:
         document = document.replace("L.control.scale().addTo(map);",
             "L.control.scale().addTo(map);\nvar north=L.control" + compass + "north.addTo(map);")
-    if 'Sentinel-2 cloudless (AlpTap)' not in document:
-        document = document.replace("D.tiles.forEach(function(t){", """D.tiles.push({name:'Sentinel-2 cloudless (AlpTap)',
-url:'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg',
-attr:'EOxCloudless EOX · Contains modified Copernicus Sentinel data 2024 · CC BY-NC-SA',max_zoom:19,max_native_zoom:14});
+    if 'EOxCloudless 2025 (Sentinel-2)' not in document:
+        document = document.replace("D.tiles.forEach(function(t){", """D.tiles.push({name:'EOxCloudless 2025 (Sentinel-2)',
+url:'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/g/{z}/{y}/{x}.jpg',
+attr:'EOxCloudless EOX · Contains modified Copernicus Sentinel data 2025 · CC BY-NC-SA',max_zoom:19,max_native_zoom:14});
 D.tiles.forEach(function(t){""")
     document = document.replace("maxZoom:t.max_zoom}", "maxZoom:t.max_zoom,maxNativeZoom:t.max_native_zoom||t.max_zoom}")
     return document.replace("L.control.layers(bases,overlays,{collapsed:false})",

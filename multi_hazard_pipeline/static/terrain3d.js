@@ -1,6 +1,7 @@
 /* 3D terrain view: a lit elevation mesh with a basemap and part fills draped over it,
    terrain-following outlines, and camera-facing labels at a constant screen size. One run is shown at a time.
    Needs an import map for "three" (see the page templates). */
+import { terrainControls } from "./terrain-controls.js";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { Line2 } from "three/addons/lines/Line2.js";
@@ -28,45 +29,75 @@ export async function mount(container, options = {}) {
   if (!response.ok) throw new Error(data.error || "The 3D view could not be loaded.");
   const source = new URL(options.url, location.href).searchParams.get("source") || "run";
   if (data.terrain?.source !== source) throw new Error("The server did not load the selected terrain source. Reload the interface and try again.");
+  const extent = new URL(options.url, location.href).searchParams.get("extent") || "catchment";
+  if (data.terrain?.extent !== extent) throw new Error("Restart Start Interface.cmd to enable the new terrain extent controls, then reload this page.");
+  if (data.terrain.streaming) {
+    const { mountWorldTerrain } = await import("./world-terrain.js");
+    return mountWorldTerrain(container, data, options);
+  }
   return new TerrainView(container, data, options);
 }
 
 // Shared source choices for single-run and comparison views; remain usable after a load failure.
 export function terrainSources(host, url, load) {
-  host.innerHTML = `<div class="terrain3d-tools">
-    <button type="button" class="button secondary" data-source="run">Use run DEM</button>
-    <button type="button" class="button secondary" data-source="online">Retrieve online terrain</button>
-    <label>Elevation GeoTIFF <input type="file" accept=".tif,.tiff" aria-label="Elevation GeoTIFF"></label>
-    <button type="button" class="button secondary" data-source="upload">Upload DEM</button>
-    </div><p class="hint" role="status" aria-live="polite"></p>`;
-  const status = host.querySelector('[role="status"]');
-  let generation = 0, current = null;
-  async function run(source, file) {
+  host.innerHTML = `<div class="terrain-source-bar">
+    <label class="map-select-field"><span>Elevation source</span><select aria-label="Elevation source">
+      <optgroup label="Local elevation"><option value="run">Run elevation model</option><option value="upload">Choose elevation file...</option></optgroup>
+      <optgroup label="Online elevation"><option value="online" selected>Mapzen / global terrain</option><option value="copernicus">Copernicus GLO-30 / surface model</option></optgroup>
+    </select></label>
+    <label class="map-select-field"><span>Terrain extent</span><select aria-label="Terrain extent">
+      <option value="catchment">Catchment & surroundings</option><option value="full" selected>Full available terrain</option>
+    </select></label>
+    <button type="button" class="button secondary terrain-file" hidden>Choose another file...</button>
+    <input type="file" accept=".tif,.tiff" aria-label="Elevation GeoTIFF" hidden>
+    <details class="terrain-discover"><summary>Find more elevation data &nearr;</summary><div>
+      <a href="https://browser.dataspace.copernicus.eu/" target="_blank" rel="noopener">Copernicus Data Space</a>
+      <a href="https://portal.opentopography.org/datasets" target="_blank" rel="noopener">OpenTopography / global & local DEMs</a>
+      <a href="https://www.data.gv.at/" target="_blank" rel="noopener">Austria / open elevation data</a>
+      <small>Download an elevation GeoTIFF, then choose it above. Heights must be in metres.</small>
+    </div></details>
+    </div><p class="terrain-source-status" role="status" aria-live="polite"></p>
+    <div class="terrain-notice" role="status" hidden><span></span><button type="button" aria-label="Dismiss coverage notice">&times;</button></div>`;
+  const status = host.querySelector('.terrain-source-status');
+  const [sourceSelect, extentSelect] = host.querySelectorAll('select');
+  const input = host.querySelector('input'), fileButton = host.querySelector('.terrain-file');
+  const notice = host.querySelector('.terrain-notice');
+  notice.querySelector('button').onclick = () => notice.hidden = true;
+  let generation = 0, current = null, file = null, loadedSource = 'online';
+  async function run() {
+    const source = sourceSelect.value;
+    if (source === 'upload' && !file) { input.click(); return; }
     const token = ++generation;
-    host.querySelectorAll('button').forEach(b => b.disabled = true);
-    status.textContent = source === 'online' ? 'Retrieving online terrain (first load may take a minute)…' : 'Loading elevation model…';
-    const target = new URL(url, location.href); target.searchParams.set('source', source);
+    delete status.dataset.error;
+    host.querySelectorAll('select, .terrain-file').forEach(b => b.disabled = true);
+    status.textContent = ['online', 'copernicus'].includes(source) ? 'Loading online elevation...' : 'Loading elevation model...';
+    notice.hidden = true;
+    const target = new URL(url, location.href);
+    target.searchParams.set('source', source); target.searchParams.set('extent', extentSelect.value);
     try {
       if (current) { current.dispose(); current = null; }
-      const view = await load({ url: target.href, file });
-      if (token !== generation) { view.dispose(); return; }
-      current = view;
-      status.textContent = view.data.terrain.attribution || 'Elevation model loaded.';
+      const view = await load({ url: target.href, file: source === 'upload' ? file : null,
+        notify: message => { notice.querySelector('span').textContent = message; notice.hidden = false; } });
+      if (token !== generation || !host.isConnected) { view.dispose(); return; }
+      current = view; loadedSource = source;
+      status.textContent = (source === 'upload' ? `${file.name} / ` : '') + (view.data.terrain.attribution || 'Elevation loaded.');
+      if (view.data.terrain.notice) { notice.querySelector('span').textContent = view.data.terrain.notice; notice.hidden = false; }
     } catch (err) {
-      if (token === generation) status.textContent = err.message || String(err);
+      if (token === generation) { status.textContent = err.message || String(err); status.dataset.error = 'true'; }
     } finally {
-      if (token === generation) host.querySelectorAll('button').forEach(b => b.disabled = false);
+      if (token === generation) host.querySelectorAll('select, .terrain-file').forEach(b => b.disabled = false);
     }
   }
-  host.querySelectorAll('[data-source]').forEach(b => b.addEventListener('click', () => {
-    const file = host.querySelector('input').files[0];
-    if (b.dataset.source === 'upload' && !file) { status.textContent = 'Choose an elevation GeoTIFF first.'; return; }
-    run(b.dataset.source, b.dataset.source === 'upload' ? file : null);
-  }));
-  host.querySelector('input').addEventListener('change', e => {
-    status.textContent = e.target.files[0] ? `Selected: ${e.target.files[0].name}. Click Upload DEM.` : 'No DEM selected.';
-  });
-  run('run');
+  sourceSelect.onchange = () => {
+    fileButton.hidden = sourceSelect.value !== 'upload';
+    delete status.dataset.error;
+    if (sourceSelect.value === 'upload' && !file) input.click(); else run();
+  };
+  extentSelect.onchange = run;
+  fileButton.onclick = () => input.click();
+  input.onchange = () => { if (input.files[0]) { file = input.files[0]; input.value = ""; run(); } };
+  input.addEventListener('cancel', () => { if (!file) { sourceSelect.value = loadedSource; fileButton.hidden = true; } });
+  run();
 }
 
 const tile2lon = (x, z) => x / 2 ** z * 360 - 180;
@@ -106,6 +137,14 @@ class TerrainView {
     this.labelLayer.className = "terrain-label-layer";
     container.append(this.labelLayer);
     this.compass = northArrow(container);
+    this.compass.classList.add("map-north-3d");
+    this.scale = document.createElement("div");
+    this.scale.className = "terrain-scale";
+    this.scale.title = "Horizontal distance at the view center; perspective scale varies across the terrain.";
+    this.scale.innerHTML = '<span class="terrain-scale-label"></span><div class="terrain-scale-bar"></div><small>at view center</small>';
+    container.append(this.scale);
+    this.scaleLabel = this.scale.querySelector(".terrain-scale-label");
+    this.scaleBar = this.scale.querySelector(".terrain-scale-bar");
     this.attribution = document.createElement("div");
     this.attribution.className = "terrain-attribution";
     container.append(this.attribution);
@@ -132,12 +171,18 @@ class TerrainView {
     this.camera = new THREE.PerspectiveCamera(40, 1, 5, longSide * 20);
     const relief = (t.zmax - t.zmin) * this.exaggeration;
     this.camera.position.set(-longSide * 0.35, relief + longSide * 0.55, longSide * 0.85);
+    // Reverse mouse orbit direction without changing right-button panning or touch gestures.
+    this.renderer.domElement.addEventListener("pointerdown", event => {
+      this.controls.rotateSpeed = event.pointerType === "mouse" && event.button === 0 ? -1 : 1;
+    });
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, relief * 0.35, 0);
     this.controls.maxPolarAngle = Math.PI * 0.495;
     this.controls.enableDamping = true;
     this.controls.screenSpacePanning = true;
+    this.orientNorth();
     this.controls.saveState();
+    this.navigation = terrainControls(container, action => this.navigate(action));
 
     this.resize = () => {
       const width = container.clientWidth || 600, height = container.clientHeight || 520;
@@ -372,6 +417,17 @@ class TerrainView {
     if (this.overlayDirty) this.rebuildOverlays();
     const width = this.container.clientWidth, height = this.container.clientHeight;
     const pixelScale = 2 * this.camera.position.distanceTo(this.controls.target) * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)) / height;
+    // OrbitControls keeps camera-right horizontal. At its target depth this is
+    // horizontal ground metres per CSS pixel, independent of terrain exaggeration.
+    const maxMetres = pixelScale * Math.min(120, width * .25);
+    if (Number.isFinite(maxMetres) && maxMetres > 0) {
+      const magnitude = 10 ** Math.floor(Math.log10(maxMetres));
+      const distance = [5, 2, 1].find(n => n * magnitude <= maxMetres) * magnitude;
+      const label = distance >= 1000 ? `${Number((distance / 1000).toPrecision(3))} km` : `${Number(distance.toPrecision(3))} m`;
+      this.scaleLabel.textContent = label;
+      this.scaleBar.style.width = `${distance / pixelScale}px`;
+      this.scale.setAttribute("aria-label", `${label}, horizontal scale at view center`);
+    }
     for (const line of this.overlays.children) {
       line.material.resolution.set(width, height);
       if (line.material.dashed) line.material.dashScale = 1 / pixelScale;
@@ -446,7 +502,35 @@ class TerrainView {
     if (others !== undefined) this.others = others;
     this.overlayDirty = true; this.redraw();
   }
-  resetView() { this.controls.reset(); }
+  orientNorth() {
+    const affine = this.data.terrain.lonlat_to_xy;
+    const north = new THREE.Vector3(affine[1], 0, -affine[4]).normalize();
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const distance = Math.hypot(offset.x, offset.z);
+    this.camera.position.copy(this.controls.target).add(new THREE.Vector3(-north.x * distance, offset.y, -north.z * distance));
+    this.controls.update();
+  }
+  navigate(action) {
+    if (action === "reset") { this.resetView(); return; }
+    if (action === "north") { this.orientNorth(); return; }
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const sphere = new THREE.Spherical().setFromVector3(offset);
+    if (action === "rotate-left") sphere.theta += .2;
+    if (action === "rotate-right") sphere.theta -= .2;
+    if (action === "tilt-up") sphere.phi = Math.min(Math.PI * .49, sphere.phi + .12);
+    if (action === "tilt-down") sphere.phi = Math.max(.08, sphere.phi - .12);
+    if (action === "zoom-in") sphere.radius = Math.max(20, sphere.radius * .8);
+    if (action === "zoom-out") sphere.radius *= 1.25;
+    if (action.startsWith("pan-")) {
+      const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
+      const direction = action === "pan-left" ? right.negate() : action === "pan-right" ? right : action === "pan-up" ? up : up.negate();
+      this.controls.target.addScaledVector(direction, sphere.radius * .1);
+    }
+    this.camera.position.copy(this.controls.target).add(new THREE.Vector3().setFromSpherical(sphere));
+    this.controls.update();
+  }
+  resetView() { this.controls.reset(); this.orientNorth(); }
   dispose() {
     cancelAnimationFrame(this.frame);
     clearTimeout(this.pending);
@@ -454,6 +538,7 @@ class TerrainView {
     this.clearOverlays();
     this.observer.disconnect();
     this.controls.dispose();
+    this.navigation.remove();
     this.geometry.dispose(); this.texture.dispose(); this.mesh.material.dispose();
     this.renderer.dispose();
     this.container.innerHTML = "";

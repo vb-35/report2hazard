@@ -21,8 +21,19 @@ body > .site-header { min-height: 62px; padding: 0; border-bottom: 1px solid #e4
 @media (max-width: 720px) { .site-header__inner { width: calc(100% - 32px); flex-wrap: wrap; padding-block: 12px; gap: 12px; }.site-header .site-nav { flex-wrap: nowrap; }.site-header .site-nav a { padding-inline: 10px; }.local-label { display: none; } }
 @media (max-width: 640px) { .site-header__inner, .site-footer { width: min(100% - 32px, 1100px); }.local-label { display: none; } }
 
-/* The SVG alone spins; the inset medallion stays still. One quick spin every 18s. */
-.brand-medallion { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 50%; border: 1px solid #c4cfca; background: linear-gradient(145deg,#d8e1dc,#fafcfb); box-shadow: inset 2px 3px 5px #a9b7b080, inset -2px -2px 4px white, 0 1px 0 white; perspective: 180px; }
-.brand-medallion .brand-mark { animation: logo-coin 18s linear infinite; transform-origin: center; }
-@keyframes logo-coin { 0%, 90% { transform: rotateX(0) rotateY(0) rotateZ(0); } 92% { transform: rotateX(18deg) rotateY(180deg) rotateZ(-8deg); } 94% { transform: rotateX(12deg) rotateY(540deg) rotateZ(6deg); } 97%,100% { transform: rotateX(0) rotateY(720deg) rotateZ(0); } }
-@media (prefers-reduced-motion: reduce) { .brand-medallion .brand-mark { animation: none; } }
+/* The original mountain mark spins upright inside a fixed, beveled medallion. */
+.brand-medallion { display: grid; place-items: center; width: 44px; height: 44px; flex: none; border-radius: 50%; border: 1px solid #142b48; position: relative; isolation: isolate; background: linear-gradient(135deg,#07152a 0%,#122b49 38%,#3c6089 76%,#6385aa 100%); box-shadow: inset 2px 3px 4px #020916b3, inset -1px -1px 2px #91b6db59, 0 1px 0 #ffffff80; perspective: 180px; }
+.brand-medallion .brand-mark { transform-origin: center; }
+
+/* Workflow accents echo the tint of each page. */
+[data-workflow="reports"] { --workflow-accent:#526c94; --workflow-active:#e6edf7; --workflow-border:#bac9df; --workflow-ink:#314866; }
+[data-workflow="localization"] { --workflow-accent:#476e5c; --workflow-active:#e3efe7; --workflow-border:#b3cdbd; --workflow-ink:#2f5340; }
+[data-workflow="compare"] { --workflow-accent:#8a6747; --workflow-active:#f1e7db; --workflow-border:#d7bfa6; --workflow-ink:#6b4b30; }
+body.index-page[data-workflow] { --na-accent:var(--workflow-accent); }
+.site-header .site-nav a[aria-current="page"] { background:var(--workflow-active); border-color:var(--workflow-border); color:var(--workflow-ink); }
+.site-header .site-nav a:hover { background:var(--workflow-active); border-color:var(--workflow-border); color:var(--workflow-ink); }
+.site-header .site-nav a:focus-visible { outline-color:var(--workflow-border); }
+.brand-medallion::before { content:""; position:absolute; inset:4px; border-radius:50%; background:linear-gradient(145deg,#08182d 0%,#132c49 42%,#294968 76%,#3a5c7e 100%); box-shadow:inset 3px 4px 6px #010813cc,inset -2px -3px 5px #9bbddd59; pointer-events:none; }
+.brand-medallion .brand-mark { position:relative; z-index:1; width:30px; height:30px; transform:rotateY(0deg); }
+
+body[data-workflow] input:is([type="checkbox"],[type="radio"],[type="range"]) { accent-color:var(--workflow-accent); }

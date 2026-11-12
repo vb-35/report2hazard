@@ -170,7 +170,7 @@ D.tiles.forEach(function(t){L.tileLayer(t.url,{maxZoom:t.max_zoom})});
 L.control.layers(bases,overlays,{collapsed:false}).addTo(map);
 L.control.scale().addTo(map);"""
         upgraded = upgrade_saved_map(source)
-        self.assertIn('s2cloudless-2024_3857', upgraded)
+        self.assertIn('s2cloudless-2025_3857', upgraded)
         self.assertIn("var north=L.control({position:'topright'})", upgraded)
         self.assertIn('maxNativeZoom:t.max_native_zoom', upgraded)
         self.assertIn('<script id="segmap-data">{"segments":[]}</script>', upgraded)
@@ -180,3 +180,15 @@ L.control.scale().addTo(map);"""
         from segment_mapping.webmap import upgrade_saved_map
         source = '<html><body>A custom imported map</body></html>'
         self.assertEqual(upgrade_saved_map(source), source)
+
+    def test_saved_imagery_is_replaced_without_a_duplicate_option(self):
+        from segment_mapping.webmap import upgrade_saved_map
+        source = """var map=L.map('map');
+D.tiles.push({name:'Sentinel-2 cloudless (legacy source)',url:'s2cloudless-2024_3857',attr:'Sentinel data 2024'});
+D.tiles.forEach(function(t){});
+L.control.scale().addTo(map);"""
+        upgraded = upgrade_saved_map(source)
+        self.assertNotIn("legacy source", upgraded)
+        self.assertNotIn("2024", upgraded)
+        self.assertEqual(upgraded.count("EOxCloudless 2025 (Sentinel-2)"), 1)
+        self.assertEqual(upgrade_saved_map(upgraded), upgraded)

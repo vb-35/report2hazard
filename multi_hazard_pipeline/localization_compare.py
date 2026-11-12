@@ -318,7 +318,7 @@ def _transform_coords(coords, transform):
     return [round(float(x), 1), round(float(y), 1)]
 
 
-def _terrain_grid(base_dir: Path, source="run", upload=None, fallback_bounds=None) -> dict:
+def _terrain_grid(base_dir: Path, source="run", upload=None, fallback_bounds=None, extent="catchment") -> dict:
     """A down-sampled DEM around the catchment, in the run's projected CRS, rows from north to south."""
     import numpy as np
     import rasterio
@@ -348,14 +348,15 @@ def _terrain_grid(base_dir: Path, source="run", upload=None, fallback_bounds=Non
         pad = .15 * max(bounds[2] - bounds[0], bounds[3] - bounds[1]) + 300
         bounds = (bounds[0]-pad, bounds[1]-pad, bounds[2]+pad, bounds[3]+pad)
     dem, credit = terrain_dem(base_dir, source, bounds, crs, upload)
-    key = (str(dem), dem.stat().st_mtime_ns, str(crs), bounds)
+    key = (str(dem), dem.stat().st_mtime_ns, str(crs), bounds, extent, source)
     if key in _TERRAIN_CACHE:
         return _TERRAIN_CACHE[key]
     with rasterio.open(dem) as ds:
         if not ds.crs:
             raise PipelineError("The DEM has no coordinate system. Upload a GeoTIFF with a defined CRS.")
         b = transform_bounds(ds.crs, crs, *ds.bounds)
-        bounds = bounds or b
+        requested_bounds = bounds
+        bounds = b if extent == "full" else (bounds or b)
         bounds = (max(bounds[0], b[0]), max(bounds[1], b[1]), min(bounds[2], b[2]), min(bounds[3], b[3]))
         width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
         if width <= 0 or height <= 0:
@@ -383,23 +384,40 @@ def _terrain_grid(base_dir: Path, source="run", upload=None, fallback_bounds=Non
                   z=[round(float(v), 1) for v in filled.ravel()], zmin=round(float(filled.min()), 1),
                   zmax=round(float(filled.max()), 1), lonlat_to_xy=[float(v) for v in (*ax, *ay)],
                   lonlat_bounds=[float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max())],
-                  dem=dem.name, attribution=credit, source=source)
+                  dem=dem.name, attribution=credit, source=source, extent=extent,
+                  notice=("This elevation model has finite coverage. Terrain outside the file is unavailable."
+                          if extent == "full" else
+                          "The elevation file covers only part of the requested surroundings."
+                          if requested_bounds and any((b[0] > requested_bounds[0], b[1] > requested_bounds[1],
+                                                       b[2] < requested_bounds[2], b[3] < requested_bounds[3])) else ""))
+    if source == "copernicus" and extent == "full":
+        result["notice"] = "Showing the downloaded Copernicus region. For continuous worldwide exploration, select Mapzen with Full available terrain."
+    if np.ma.getmaskarray(z).any():
+        result["notice"] += " Missing elevation cells are shown at the lowest available height; these areas are not measured terrain."
     _TERRAIN_CACHE[key] = result
     return result
 
 
-def terrain_data(root: Path, run_ids: list[str], source="run", upload=None) -> dict:
+def terrain_data(root: Path, run_ids: list[str], source="run", upload=None, extent="catchment") -> dict:
     """Terrain, context and each run's parts in the run's projected CRS, for the 3D view."""
     from pyproj import Transformer
 
+    if extent not in ("catchment", "full"):
+        raise PipelineError("Choose catchment surroundings or full available terrain.")
     data = comparison_data(root, run_ids)
     report = data["reports"][0]
+    if extent == "full" and source == "online":
+        from .terrain_sources import MAPZEN_CREDIT
+        return dict(models=data["models"], name=report["name"], segments=report["segments"],
+                    terrain=dict(source=source, extent=extent, streaming=True, attribution=MAPZEN_CREDIT,
+                                 notice="Global elevation streams as you pan and zoom. Detail varies by region; coverage ends at 85.05 degrees latitude. Left-drag to rotate and tilt; right-drag to pan; scroll to zoom."),
+                    bounds=report["bounds"], context=report["context"], runs=report["runs"])
     base_dir = root / _entries(root)[data["models"][0]["key"]]["base_run_id"]
     features = report["context"].get("catchment", []) or [f for r in report["runs"].values() for f in r["features"]]
     from shapely.geometry import shape
     boxes = [shape(f["geometry"]).bounds for f in features if f.get("geometry") and not shape(f["geometry"]).is_empty]
     bounds = (min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)) if boxes else None
-    grid = _terrain_grid(base_dir, source, upload, bounds)
+    grid = _terrain_grid(base_dir, source, upload, bounds, extent)
     to_xy = Transformer.from_crs(4326, grid["crs"], always_xy=True).transform
 
     def local(features):
