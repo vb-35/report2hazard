@@ -72,8 +72,8 @@ Taxonomy decision rules:
 """.strip()
 
 
-def api_base_url_from_env() -> str:
-    value = os.environ.get("TW_LLM_API_BASE_URL", "").strip()
+def setting_from_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
     if value:
         return value
     # Windows launchers can inherit an environment older than the saved user setting.
@@ -81,36 +81,99 @@ def api_base_url_from_env() -> str:
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            value, _ = winreg.QueryValueEx(key, "TW_LLM_API_BASE_URL")
+            value, _ = winreg.QueryValueEx(key, name)
         return value.strip() if isinstance(value, str) else ""
     except (ImportError, OSError):
         return ""
 
 
+def api_base_url_from_env() -> str:
+    return setting_from_env("TW_LLM_API_BASE_URL")
+
+
+# "openai": any OpenAI-compatible service (the self-hosted router). "anthropic": the Claude API (Messages).
+PROVIDERS: dict[str, dict[str, str]] = {
+    "openai": {"label": "Self-hosted (OpenAI-compatible)", "model": "nvidia/Qwen3.8-27B-NVFP4",
+               "api_key_env_var": "TW_LLM_API_KEY"},
+    "anthropic": {"label": "Anthropic API (Claude)", "model": "claude-opus-5-5", "api_key_env_var": "ANTHROPIC_API_KEY"},
+}
+
+
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def provider_from_env() -> str:
+    return setting_from_env("TW_LLM_PROVIDER").lower() or "openai"
+
+
 @dataclass(frozen=True)
 class LLMConfig:
+    # Select with TW_LLM_PROVIDER or LLMConfig.with_provider(); see PROVIDERS.
+    provider: str = field(default_factory=provider_from_env)
+    # OpenAI-compatible provider only; the Anthropic client uses its own endpoint (or ANTHROPIC_BASE_URL).
     api_base_url: str = field(default_factory=api_base_url_from_env)
     text_endpoint: str = "/chat/completions"
-    api_key_env_var: str = "TW_LLM_API_KEY"
-    model: str = "nvidia/Qwen3.8-27B-NVFP4"
+    # Empty model / key variable: the provider's default from PROVIDERS.
+    api_key_env_var: str = ""
+    model: str = ""
     retries: int = 3
+    # Ignored by the Anthropic provider: current Claude models reject sampling parameters.
     temperature: float = 0.0
+    # Anthropic: sent as output_config.effort (low, medium, high, xhigh, max).
     reasoning_effort: str | None = "medium"
     # The GPU router no longer stops requests at 600 s (nginx fixed 2026-11-04). Placement calls under parallel load
     # reached 575 s, so wait up to 20 minutes before retrying.
     timeout_seconds: int = 1200
     max_request_chars: int = 200000
-    # Optional cap on generated tokens (reasoning included). None keeps the server default. A cap ends runaway
-    # generations that a server keeps running after the client has disconnected.
+    # Optional cap on generated tokens (reasoning included). None keeps the server default (Anthropic requires a
+    # value, so that provider uses 64000). A cap ends runaway generations that a server keeps running after the
+    # client has disconnected.
     max_output_tokens: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.provider not in PROVIDERS:
+            raise ValueError(f"unknown LLM provider {self.provider!r}; choose one of {', '.join(PROVIDERS)}")
+        defaults = PROVIDERS[self.provider]
+        for name in ("model", "api_key_env_var"):
+            if not getattr(self, name):
+                object.__setattr__(self, name, defaults[name])
+
+    def with_provider(self, provider: str | None, model: str | None = None) -> "LLMConfig":
+        """Switch provider; the model and key variable reset to that provider's defaults unless a model is given."""
+        from dataclasses import replace
+
+        provider = (provider or self.provider).strip().lower()
+        if provider == self.provider:
+            return replace(self, model=model or self.model)
+        return replace(self, provider=provider, model=model or "", api_key_env_var="")
+
     def api_key_from_env(self) -> str:
-        api_key = os.environ.get(self.api_key_env_var, "").strip()
-        if not api_key:
+        api_key = setting_from_env(self.api_key_env_var)
+        if not api_key and self.provider != "anthropic":
             from .errors import PipelineError
 
             raise PipelineError(f"missing required environment variable {self.api_key_env_var}")
+        # The Anthropic SDK also finds ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile by itself.
         return api_key
+
+
+def llm_from_choices(base: LLMConfig, provider: str | None = None, model: str | None = None,
+                     effort: str | None = None) -> LLMConfig:
+    """Apply interface or command-line choices; empty values keep the base settings."""
+    from dataclasses import replace
+
+    from .errors import PipelineError
+
+    provider = (provider or "").strip().lower() or None
+    if provider and provider not in PROVIDERS:
+        raise PipelineError(f"Unknown model provider {provider!r}; choose one of {', '.join(PROVIDERS)}.")
+    llm = base.with_provider(provider, (model or "").strip() or None)
+    effort = (effort or "").strip().lower()
+    if effort:
+        if effort not in EFFORT_LEVELS:
+            raise PipelineError(f"Unknown reasoning effort {effort!r}; choose one of {', '.join(EFFORT_LEVELS)}.")
+        llm = replace(llm, reasoning_effort=effort)
+    return llm
 
 
 @dataclass(frozen=True)

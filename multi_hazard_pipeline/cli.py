@@ -6,7 +6,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from .config import DEFAULT_CONFIG
+from .config import DEFAULT_CONFIG, PROVIDERS
 from .human_review import approve_run, reject_run, request_correction
 from .llm import ChatClient
 from .pipeline import run_pipeline
@@ -35,8 +35,9 @@ def parser() -> argparse.ArgumentParser:
     vision.add_argument("input_file")
     vision.add_argument("--pages", help="1-based PDF page numbers, comma-separated; required for PDFs (up to 8)")
     vision.add_argument("--question", default="Describe the visible hazard processes, figures and map evidence.")
-    vision.add_argument("--api-base-url", default="http://llm.igf.oeaw.ac.at/v1")
-    vision.add_argument("--model", default=DEFAULT_CONFIG.llm.model)
+    vision.add_argument("--provider", choices=tuple(PROVIDERS), help="model provider (default: TW_LLM_PROVIDER or openai)")
+    vision.add_argument("--api-base-url", default="http://llm.igf.oeaw.ac.at/v1", help="OpenAI-compatible provider only")
+    vision.add_argument("--model", help="model (default: the provider's default model)")
     vision.add_argument("--max-dimension", type=int, default=1600, help="longest image side in pixels (256-4096)")
     vision.add_argument("--max-output-tokens", type=int, default=4096, help="includes reasoning tokens")
     vision.add_argument("--output", help="save JSON to a new file; otherwise print JSON")
@@ -61,7 +62,11 @@ def parser() -> argparse.ArgumentParser:
     localize.add_argument("--no-review", action="store_true", help="skip the self-review call")
     localize.add_argument("--no-browser", action="store_true", help="skip the headless browser map check")
     localize.add_argument("--text-only", action="store_true", help="disable report images and use the configured text API")
-    localize.add_argument("--api-base-url", help="override the localization service (vision default: http://llm.igf.oeaw.ac.at/v1)")
+    localize.add_argument("--provider", choices=tuple(PROVIDERS),
+                          help="model provider: openai = self-hosted OpenAI-compatible service, anthropic = Claude API "
+                               "(default: TW_LLM_PROVIDER or openai)")
+    localize.add_argument("--effort", choices=("low", "medium", "high", "xhigh", "max"), help="reasoning effort (default: medium)")
+    localize.add_argument("--api-base-url", help="override the OpenAI-compatible service (vision default: http://llm.igf.oeaw.ac.at/v1)")
     localize.add_argument("--model", help="override the localization model")
     localize.add_argument("--resume", action="store_true", help="resume saved placements when inputs/settings match; existing outputs are preserved")
     localize.add_argument("--allow-network", action="store_true", help="allow bounded model-requested public GIS acquisition from configured providers")
@@ -89,8 +94,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.output and Path(args.output).exists():
                 raise ValueError("output already exists; choose a new file")
             pages = [int(page.strip()) for page in args.pages.split(",")] if args.pages is not None else None
-            config = replace(DEFAULT_CONFIG.llm, api_base_url=args.api_base_url, text_endpoint="/responses",
-                             model=args.model, max_output_tokens=args.max_output_tokens, max_request_chars=12_000_000)
+            config = replace(DEFAULT_CONFIG.llm.with_provider(args.provider, args.model), api_base_url=args.api_base_url,
+                             text_endpoint="/responses", max_output_tokens=args.max_output_tokens,
+                             max_request_chars=12_000_000)
             result = analyze_image(ChatClient.from_config(config), Path(args.input_file),
                                    question=args.question, pages=pages, max_dimension=args.max_dimension)
             serialized = json.dumps(result, indent=2, ensure_ascii=True)
@@ -140,7 +146,8 @@ def main(argv: list[str] | None = None) -> int:
                                   review=not args.no_review, browser_check=not args.no_browser,
                                   max_output_tokens=args.max_output_tokens, vision=not args.text_only,
                                   api_base_url=args.api_base_url, model=args.model, resume=args.resume,
-                                  allow_network=args.allow_network, figure_manifest=args.figure_manifest)
+                                  allow_network=args.allow_network, figure_manifest=args.figure_manifest,
+                                  provider=args.provider, reasoning_effort=args.effort)
         except Exception as exc:
             print(f"localization failed: {exc}", file=sys.stderr)
             return 1

@@ -10,7 +10,7 @@
   {% block styles %}{% endblock %}
 </head>
 {% set endpoint = request.endpoint or '' %}
-{% set workflow = 'compare' if endpoint in ['compare_localizations', 'import_agent_localization', 'save_agent_localization'] else 'localization' if endpoint in ['new_localization', 'start_provided_localization'] or (endpoint in ['localization_detail', 'start_localization'] and test) else 'reports' %}
+{% set workflow = 'agent' if endpoint in ['new_agent_run', 'start_agent_run', 'agent_run_detail', 'stop_agent_run'] else 'compare' if endpoint in ['compare_localizations', 'import_agent_localization', 'save_agent_localization'] else 'localization' if endpoint in ['new_localization', 'start_provided_localization'] or (endpoint in ['localization_detail', 'start_localization'] and test) else 'reports' %}
 <body class="{% block body_class %}{% endblock %}" data-workflow="{{ workflow }}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="site-header">
@@ -22,6 +22,7 @@
       <nav class="site-nav" aria-label="Main">
         <a href="{{ url_for('index') }}" data-workflow="reports"{% if workflow == 'reports' %} aria-current="page"{% endif %}>Reports</a>
         <a href="{{ url_for('new_localization') }}" data-workflow="localization"{% if workflow == 'localization' %} aria-current="page"{% endif %}>Localization test</a>
+        <a href="{{ url_for('new_agent_run') }}" data-workflow="agent"{% if workflow == 'agent' %} aria-current="page"{% endif %}>Agent run</a>
         <a href="{{ url_for('compare_localizations') }}" data-workflow="compare"{% if workflow == 'compare' %} aria-current="page"{% endif %}>Compare</a>
       </nav>
       <span class="local-label">Local workspace</span>

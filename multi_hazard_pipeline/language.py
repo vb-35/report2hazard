@@ -31,8 +31,16 @@ def language_settings(config: PipelineConfig) -> dict[str, float]:
 
 
 def recorded_language_config(config: PipelineConfig, manifest: dict[str, Any]) -> PipelineConfig:
+    """The settings a run was started with: language thresholds and, when recorded, its model provider."""
     saved = manifest.get("configuration", {})
-    return replace(config, **{name: saved[name] for name in LANGUAGE_SETTINGS if name in saved})
+    config = replace(config, **{name: saved[name] for name in LANGUAGE_SETTINGS if name in saved})
+    if saved.get("llm_provider"):
+        # Corrections and edits keep the provider, model and effort the run started with.
+        llm = config.llm.with_provider(saved["llm_provider"], saved.get("llm_model"))
+        if "reasoning_effort" in saved:
+            llm = replace(llm, reasoning_effort=saved["reasoning_effort"])
+        config = replace(config, llm=llm)
+    return config
 
 
 @lru_cache(maxsize=1)

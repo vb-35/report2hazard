@@ -51,6 +51,8 @@ An easy way to think about the technologies is:
 | [`multi_hazard_pipeline/static/status.js`](multi_hazard_pipeline/static/status.js) | The largest browser file: live status, segment table, evidence reader, citations, statistics, and review actions. |
 | [`multi_hazard_pipeline/static/edit.js`](multi_hazard_pipeline/static/edit.js) | Manages the segment editor and protects unsaved edits. |
 | [`multi_hazard_pipeline/static/delete.js`](multi_hazard_pipeline/static/delete.js) | Opens and fills the permanent-deletion warning dialog. |
+| [`templates/_model_options.html`](multi_hazard_pipeline/templates/_model_options.html), [`static/model-options.js`](multi_hazard_pipeline/static/model-options.js) | Provider, model and effort fields shared by the upload and localization forms. |
+| [`agent_web.py`](multi_hazard_pipeline/agent_web.py), [`agent_runs.py`](multi_hazard_pipeline/agent_runs.py), [`templates/agent_*.html`](multi_hazard_pipeline/templates/agent_new.html), [`static/agent-run.js`](multi_hazard_pipeline/static/agent-run.js) | Agent runs: form, run page with live status and stop button, and the backend that starts Claude Code or Codex in a background thread. |
 | [`multi_hazard_pipeline/workspace.py`](multi_hazard_pipeline/workspace.py) | Prepares saved pipeline information in the shape the browser expects. This supports the interface, although it is not visible page code. |
 
 ## 3. How the interface starts
@@ -189,12 +191,18 @@ Flask then connects web addresses to Python functions. These connections are cal
 `start_run()` is the upload controller. Its logic is:
 
 1. Read uploaded files, the optional folder path, and the selected report mode.
-2. Require exactly one input method: uploaded files **or** a folder.
+2. Require exactly one input method: uploaded files **or** a folder. Read the model choices; empty fields keep the defaults.
 3. Clean uploaded filenames and allow only PDF, DOCX, or TXT.
 4. For a multi-report collection, require exactly one PDF.
 5. Create a saved run record.
 6. Queue either the ordinary pipeline or the PDF-separation workflow.
 7. Redirect the browser to the new progress page.
+
+The model choices are saved in the run's manifest (`configuration.llm_provider`, `llm_model`, `reasoning_effort`), and `recorded_language_config()` reapplies them when the run is processed again.
+
+### 4.5b Free agent runs
+
+The **Agent run** page (`/agent-runs/new`) hands the mapping prompt to Claude Code or Codex through `segment_mapping/agent_launch.py`, in its own thread. The run is laid out like a pipeline localization (`RUN/localization`, logs in `RUN/localization/agent/`), so Compare lists it with the pipeline runs of the same segments. If the interface crashes while an agent works, the run is marked as interrupted at the next start and the agent may still be running (check Task Manager for `claude` or `codex`).
 
 Both JavaScript and Python validate the form. Browser validation gives quick feedback; server validation is still essential because browser checks can be bypassed.
 
@@ -481,6 +489,8 @@ Each delete button stores its run-specific URL, title, folder, and collection si
 | Add a new web action or address | `web.py`, usually with matching HTML/JavaScript |
 | Change allowed upload/download formats | Constants and validation in `web.py`, plus the HTML file input if uploads change |
 | Change what live data is sent to the browser | `workspace.py` and the matching renderer in `status.js` |
+| Add a model provider or change its default model | `PROVIDERS` in `config.py`; the forms pick it up automatically |
+| Change how agent runs start (flags, permissions) | `segment_mapping/agent_launch.py` |
 | Change pipeline processing itself | Pipeline/agent modules, not primarily the interface files |
 
 ## 10. Terms used in the code

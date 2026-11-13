@@ -4,6 +4,7 @@ pypdf
 jsonschema
 Flask
 lingua-language-detector==2.1.1
+anthropic>=2.8  # optional: Claude API provider (TW_LLM_PROVIDER=anthropic)
 
 # GIS placement of segments (segment_mapping)
 geopandas>=1.0

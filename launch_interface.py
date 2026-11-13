@@ -6,14 +6,20 @@ import webbrowser
 
 from werkzeug.serving import make_server
 
-from multi_hazard_pipeline.config import DEFAULT_CONFIG
+from multi_hazard_pipeline.config import DEFAULT_CONFIG, PROVIDERS, setting_from_env
 from multi_hazard_pipeline.web import create_app
 
 
 def main():
-    key_name = DEFAULT_CONFIG.llm.api_key_env_var
-    if not os.environ.get(key_name, "").strip():
-        print("Enter your LLM API key to process reports, or press Enter to browse existing results.")
+    # The default provider first; the other one can be chosen per run in the interface.
+    order = [DEFAULT_CONFIG.llm.provider] + [key for key in PROVIDERS if key != DEFAULT_CONFIG.llm.provider]
+    for provider in order:
+        key_name = PROVIDERS[provider]["api_key_env_var"]
+        if setting_from_env(key_name):
+            continue
+        default = " (default provider)" if provider == DEFAULT_CONFIG.llm.provider else " (optional)"
+        print()
+        print(f"{PROVIDERS[provider]['label']}{default}: enter its API key ({key_name}), or press Enter to skip.")
         key = getpass.getpass("API key (hidden; used only for this session): ").strip()
         if key:
             os.environ[key_name] = key

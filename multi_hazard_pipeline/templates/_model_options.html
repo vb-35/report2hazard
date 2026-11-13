@@ -1,0 +1,11 @@
+{# Provider, model and reasoning effort for forms that start model work. Needs `settings` (may be empty). #}
+{% set chosen_provider = settings.provider or default_provider %}
+{% set chosen_effort = settings.effort or settings.reasoning_effort or '' %}
+<div class="model-options" data-models='{{ provider_models | tojson }}'>
+<label>Model provider<select name="provider" class="provider-select">{% for key, info in llm_providers.items() %}<option value="{{ key }}" {% if key == chosen_provider %}selected{% endif %}>{{ info.label }}</option>{% endfor %}</select></label>
+<label>Model<input name="model" class="model-input" value="{{ settings.model or '' }}" placeholder="{{ provider_models[chosen_provider] }}" autocomplete="off"></label>
+<label>Reasoning effort<select name="effort"><option value="">Default ({{ default_effort or 'server default' }})</option>{% for level in effort_levels %}<option value="{{ level }}" {% if level == chosen_effort %}selected{% endif %}>{{ level }}</option>{% endfor %}</select></label>
+<p class="hint">Leave the model empty to use the provider's default (shown greyed out).
+{% for key, info in llm_providers.items() %}<span class="provider-key" data-provider="{{ key }}">{{ info.label }}: {% if provider_keys[key] %}<strong>{{ info.api_key_env_var }} is set</strong>{% elif key == 'anthropic' %}<strong>{{ info.api_key_env_var }} is not set</strong> (an <code>ant auth login</code> profile also works){% else %}<strong>{{ info.api_key_env_var }} is not set</strong>{% endif %}.</span> {% endfor %}
+Restart the interface after changing these environment variables.</p>
+</div>

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ manifest.event }} · {{ runner_label }} · Multi-hazard review{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">{% endblock %}
+{% block body_class %}index-page localization-page agent-page{% endblock %}
+{% block content %}
+<a class="back-link" href="{{ url_for('index') }}">← All reports and tests</a>
+<header class="analysis-heading">
+  <p class="eyebrow">Free agent run</p>
+  <h1>{{ manifest.event }}</h1>
+  <p>{{ agent.model }}{% if agent.full_access %} · full access{% endif %} · {{ agent.segments }} segment(s)</p>
+</header>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+<section class="panel upload-panel page-section" aria-labelledby="inputs-heading">
+<h2 id="inputs-heading">Inputs</h2>
+<dl>
+<div><dt>Report</dt><dd class="path">{{ manifest.inputs[0].path }}</dd></div>
+<div><dt>Segments</dt><dd>{{ agent.segments }} segment(s){% if agent.source_run_id %} · approved segments of <a href="{{ url_for('run_detail', run_id=agent.source_run_id) }}">this report's review</a>{% endif %}</dd></div>
+<div><dt>GIS data</dt><dd class="path">{% if agent.dem or agent.catchment %}{{ [agent.dem, agent.catchment] | select | join(', ') }}{% else %}Found and downloaded by the agent{% endif %}</dd></div>
+<div><dt>Agent</dt><dd>{{ runner_label }} · model {{ agent.model_name or 'CLI default' }} · effort {{ agent.effort or 'CLI default' }} · {{ 'full access' if agent.full_access else ('auto permission mode' if agent.runner == 'claude' else 'workspace sandbox with network') }}</dd></div>
+</dl>
+</section>
+<section id="agent-state" class="panel upload-panel page-section status state-{{ state.status }}" data-status-url="{{ url_for('agent_run_status', run_id=manifest.run_id) }}" aria-labelledby="progress-heading">
+<div class="section-heading"><h2 id="progress-heading">Status</h2>
+{% if state.busy %}<form method="post" action="{{ url_for('stop_agent_run', run_id=manifest.run_id) }}" onsubmit="return confirm('Stop this agent run? Its work so far is kept but the map may be incomplete.')"><button type="submit" class="secondary" id="stop-agent">Stop agent</button></form>{% endif %}</div>
+<p><strong id="agent-status">{{ state.status_label }}</strong> · <span id="agent-activity">{{ state.activity }}</span></p>
+<p class="message error" id="agent-error" role="alert" {% if not state.error %}hidden{% endif %}>{{ state.error or '' }}</p>
+<details open><summary>Agent activity</summary>
+<ol id="agent-log" class="agent-log">{% for item in state.log | reverse %}<li><time>{{ item.time[11:19] }}</time> {{ item.message }}</li>{% endfor %}</ol>
+</details>
+</section>
+<section class="panel upload-panel page-section" aria-labelledby="results-heading">
+<div class="section-heading"><h2 id="results-heading">Results</h2>
+<span class="import-links">{% if compare_url %}<a class="button" href="{{ compare_url }}">Compare with other runs →</a>{% endif %}
+<a id="agent-map-link" class="button secondary" target="_blank" rel="noopener" href="{{ state.map_url or '#' }}" {% if not state.map_url %}hidden{% endif %}>Open map in a new tab</a></span></div>
+<iframe id="agent-map" class="agent-map" title="Agent run map" sandbox="allow-scripts allow-downloads" loading="lazy" {% if state.map_url %}src="{{ state.map_url }}"{% else %}hidden{% endif %}></iframe>
+<p class="hint" id="agent-no-map" {% if state.map_url %}hidden{% endif %}>The map appears here when the agent delivers it.</p>
+<h3>Downloads</h3>
+<ul id="agent-downloads" class="download-list">{% for item in state.downloads %}<li><a href="{{ item.url }}">{{ item.label }}</a></li>{% endfor %}</ul>
+<h3>Agent logs</h3>
+<ul id="agent-logs" class="download-list">{% for item in state.logs %}<li><a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.label }}</a></li>{% endfor %}</ul>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='agent-run.js') }}" defer></script>{% endblock %}

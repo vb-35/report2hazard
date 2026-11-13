@@ -9,7 +9,7 @@ Assess every approved segment for a supported location; retain an explicit unres
 Assumptions agreed so far:
 
 - **Core GIS inputs are provided** as a local spatial package (catchment, streams, DEM). `--allow-network` optionally enables bounded requests to caller-declared acquisition providers; it does not enable generic web search or invented source URLs.
-- **Vision is the CLI default.** Calls receive bounded report-page attachments; `--text-only` disables them. Image inspection does not authorize invented coordinates or pixel measurements. `--figure-manifest` supplies separately reviewed explicit outlines through checked georeferencing.
+- **Vision is the CLI default.** Calls receive the report's embedded figures from their evidence pages; `--text-only` disables them. Image inspection does not authorize invented coordinates or pixel measurements. `--figure-manifest` supplies separately reviewed explicit outlines through checked georeferencing.
 - **The `segment_mapping` toolkit is the execution engine** *(exists)*. The orchestrator writes `scripts/placements.json` and calls `build` / `deliver`. The same spec can therefore come from this stage or from a vision-capable agent run, and the results compare directly.
 
 ## 2. Position in the pipeline

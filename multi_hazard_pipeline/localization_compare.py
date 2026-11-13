@@ -52,7 +52,13 @@ def _csv_rows(path: Path) -> list[dict]:
 
 
 def _is_agent(manifest: dict) -> bool:
-    return manifest.get("kind") == AGENT_KIND
+    """An imported agent run (placements.gpkg outputs)."""
+    return manifest.get("kind") == AGENT_KIND and not _is_launched(manifest)
+
+
+def _is_launched(manifest: dict) -> bool:
+    """An agent run started from this interface: a toolkit run folder, laid out like a pipeline localization."""
+    return manifest.get("kind") == AGENT_KIND and bool((manifest.get("agent") or {}).get("launched"))
 
 
 def signature(segments: list[dict]) -> str:
@@ -71,6 +77,11 @@ def _pipeline_entry(run_dir: Path, manifest: dict) -> dict | None:
     if not config or not (run_dir / "localization" / "outputs" / "segments.geojson").is_file():
         return None
     segments = config.get("segments") or []
+    if _is_launched(manifest):
+        agent = manifest.get("agent") or {}
+        return dict(run_id=run_dir.name, base_run_id=run_dir.name, kind="agent", model=agent.get("model") or "agent",
+                    status=manifest.get("status") or "", event=config.get("event") or manifest.get("event") or "",
+                    segments=len(segments), signature=signature(segments), created_at=manifest.get("created_at", ""))
     return dict(run_id=run_dir.name, base_run_id=run_dir.name, kind="pipeline",
                 model=f"Pipeline {_when(manifest.get('created_at', ''))} · {config.get('model') or 'model not recorded'}",
                 status=(manifest.get("localization") or {}).get("status") or "",
@@ -105,7 +116,8 @@ def comparable_groups(root: Path) -> list[dict]:
         groups.setdefault(entry["signature"], dict(signature=entry["signature"], event=entry["event"],
                                                    segments=entry["segments"], runs=[]))["runs"].append(entry)
     for group in groups.values():
-        newest = max(group["runs"], key=lambda run: run["created_at"])
+        # Imported agent runs borrow the GIS context of the newest pipeline run (or launched agent run).
+        newest = max(group["runs"], key=lambda run: (run["kind"] == "pipeline", run["created_at"]))
         group["base_run_id"] = newest["run_id"]
     for run_id, manifest in manifests.items():
         if not _is_agent(manifest):
@@ -199,7 +211,7 @@ def read_outputs(run_dir: Path, kind: str) -> dict:
     import geopandas as gpd
 
     outputs = run_dir / "localization" / "outputs"
-    if kind == "agent":
+    if kind == "agent" and (outputs / "placements.gpkg").is_file():
         gdf = gpd.read_file(outputs / "placements.gpkg", layer="parts")
         results = {_clean(r.get("seg_id")): dict(status=_clean(r.get("status")), reason=_clean(r.get("reason")))
                    for r in _csv_rows(outputs / "segment_results.csv")}
@@ -667,8 +679,10 @@ def export_runs(root: Path, run_ids: list[str]) -> tuple[bytes, str]:
             item = dict(path=path, kind=entry["kind"], run_id=entry["run_id"], event=entry["event"],
                         signature=entry["signature"], segments=entry["segments"], created_at=entry["created_at"])
             outputs = run_dir / "localization" / "outputs"
-            if entry["kind"] == "pipeline":
-                item["model"] = (_localization_config(run_dir) or {}).get("model") or ""
+            if entry["kind"] == "pipeline" or not (outputs / "placements.gpkg").is_file():
+                # A launched agent run is a full toolkit folder: it travels like a pipeline run, named by its model.
+                item["kind"] = "pipeline"
+                item["model"] = (_localization_config(run_dir) or {}).get("model") or entry["model"]
                 names = [rel for rel in PIPELINE_FILES if (run_dir / rel).is_file()]
                 dem = dem_file(run_dir)
                 if dem is not None:

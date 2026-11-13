@@ -14,7 +14,8 @@
   {% else %}<p>{{ manifest.inputs | map(attribute='filename') | join(', ') }}. Combine report evidence with a local GIS package, then inspect the map, uncertainties, and spatial exports.</p>{% endif %}
 </header>
 {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
-{% if manifest.status != 'approved' %}<p class="message">Approve this report in the review workspace to enable localization.</p>{% endif %}
+{% if manifest.status != 'approved' %}<p class="message">Approve this report in the review workspace to enable localization.</p>
+{% elif not test %}<p class="hint">Or let an agent map these approved segments on its own: <a href="{{ url_for('new_agent_run', from_run=manifest.run_id) }}">start a free agent run with Claude Code or Codex →</a></p>{% endif %}
 {% if test %}
 <section class="panel upload-panel page-section" aria-labelledby="inputs-heading">
 <h2 id="inputs-heading">Provided inputs</h2>
@@ -85,6 +86,7 @@
 <script id="localization-data" type="application/json">{{ state | tojson }}</script>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='localization.js') }}" defer></script>
+<script src="{{ url_for('static', filename='model-options.js') }}" defer></script>
 {% if terrain_url %}<script type="module">
 import { mount, terrainSources } from "{{ url_for('static', filename='terrain3d.js') }}";
 import { mapLegend } from "{{ url_for('static', filename='map-display.js') }}";

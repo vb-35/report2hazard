@@ -90,9 +90,13 @@ class Compiler:
             else:
                 anchors.append({"value": float(a["value"]), "point": self.point(a["point"], allow_hm=False),
                                 "label": f"{a['point']} (report p. {a.get('page')})"})
-        if not anchors:
+        if not anchors and not self.has_chainage:
             return {}
-        if not any(x.get("at") == "start" for x in anchors):
+        if not anchors:
+            # Reports station their torrents from the mouth: stations that only bound reaches are still hm points.
+            anchors.append({"value": 0.0, "at": "start",
+                            "label": "mouth of the main stream (assumed hm 0; no station in the report is tied to a point)"})
+        elif not any(x.get("at") == "start" for x in anchors):
             anchors.insert(0, {"value": 0.0, "at": "start", "label": "mouth of the main stream (assumed hm 0)"})
         return {"hm": {"line": "main", "unit_m": 100, "anchors": anchors}}
 
@@ -220,7 +224,10 @@ class Compiler:
             basis_txt += f"; {parameter['name']}=" + (f"fit to {parameter['fit_area_ha']} ha" if "fit_area_ha" in parameter else f"{parameter['value']} ({basis})")
         role = ans.get("geometry_role") or ("location" if m in ("location_point", "channel_reach", "feature_geometry") else "event_extent")
         if m in ("location_point", "channel_reach", "feature_geometry") and role != "location":
-            raise TemplateError(f"{m} provides a location, not an event footprint: geometry_role must be location")
+            if not adjust:
+                raise TemplateError(f"{m} provides a location, not an event footprint: geometry_role must be location")
+            adjusted.append(f"geometry_role set to location from {role}: {m} gives a location, not an affected-area boundary")
+            role = "location"
         boundary = ans.get("boundary_confidence", "unknown")
         if m == "named_area":  # the wording gives a place, never an extent
             role, boundary = "search_area", "unknown"

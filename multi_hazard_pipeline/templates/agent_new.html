@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Agent run · Multi-hazard review{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='new-analysis.css') }}">{% endblock %}
+{% block body_class %}index-page localization-page agent-page{% endblock %}
+{% block content %}
+<header class="analysis-heading">
+  <p class="eyebrow">Free agent localization</p>
+  <h1>Agent run</h1>
+  <p>Hand the mapping task to Claude Code or Codex. The agent reads the report, downloads or uses the GIS data and places
+  every segment through the <code>segment_mapping</code> toolkit, exactly as with the command-line prompt. It uses the
+  CLI's own sign-in (subscription or API key). Runs often take an hour or more; you can leave this page and come back.</p>
+</header>
+<ol class="workflow-strip" aria-label="Agent run steps">
+  <li class="is-active"><span>1</span><strong>Report and segments</strong></li>
+  <li><span>2</span><strong>GIS data</strong></li>
+  <li><span>3</span><strong>Agent</strong></li>
+</ol>
+{% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
+{% if results_in_project %}<div class="message warning" role="note"><p><strong>Blind runs:</strong> the agent works in the
+project folder ({{ project }}) and can read everything in it (and in the report's folder), including this interface's results folder with earlier
+localizations of the same report. For a blind comparison, start the interface with a results folder outside the
+project, or move earlier runs of this report out first.</p></div>{% endif %}
+<form id="agent-form" method="post" action="{{ url_for('start_agent_run') }}" enctype="multipart/form-data">
+{% if source %}<input type="hidden" name="from_run" value="{{ source.run_id }}">{% endif %}
+<section class="panel upload-panel page-section form-section" aria-labelledby="report-heading">
+<h2 id="report-heading"><span class="step-number">1</span>Report and segments</h2>
+{% if source %}
+<p class="message success">Using the approved segments of <strong>{{ source.inputs | map(attribute='filename') | join(', ') }}</strong>{% if source_report %} and its PDF report{% endif %}. Fill in the fields below only to replace them.</p>
+{% endif %}
+<div class="field-pair">
+<label>Upload the report PDF<input type="file" name="report_file" accept=".pdf"></label>
+<p class="or">or</p>
+<label>Report PDF on this computer<input name="report_path" value="{{ form.get('report_path', '') }}" placeholder="{{ source_report or 'C:\\data\\Seigesbach\\report.pdf' }}"></label>
+</div>
+<p class="hint">The agent reads the PDF from its place on this computer; it is not copied unless uploaded.{% if error %} Uploaded files must be selected again after an error.{% endif %}</p>
+<div class="field-pair">
+<label>Upload the segment table<input type="file" name="segments_file" accept=".tsv,.csv,.txt"></label>
+<p class="or">or</p>
+<label>Segment table on this computer<input name="segments_path" value="{{ form.get('segments_path', '') }}" placeholder="{{ 'Approved segments of the report' if source else 'C:\\data\\Seigesbach\\segments.tsv' }}"></label>
+</div>
+<p class="hint">Header row with Segment, Event, Process, Generalized Category, Interaction Type and Sediment Transport Phase (tab- or comma-separated).</p>
+<label>Event<input name="event" value="{{ form.get('event', '') }}" placeholder="Required only when the table lists several events"></label>
+</section>
+<section class="panel upload-panel page-section form-section" aria-labelledby="gis-heading">
+<h2 id="gis-heading"><span class="step-number">2</span>GIS data (optional)</h2>
+<p class="hint">Without these, the agent finds and downloads public data itself (network access is allowed).</p>
+<div class="layer-row"><label>Elevation model (DEM)<input name="dem" value="{{ form.get('dem', '') }}" placeholder="C:\GIS\area\dem.tif"></label>
+<label>DEM description<input name="dem_info" value="{{ form.get('dem_info', '') }}" placeholder="Source, resolution, CRS, licence"></label></div>
+<div class="layer-row"><label>Catchment outline<input name="catchment" value="{{ form.get('catchment', '') }}" placeholder="C:\GIS\area\catchment.gpkg"></label>
+<label>Catchment description<input name="catchment_info" value="{{ form.get('catchment_info', '') }}" placeholder="Name, code, area"></label></div>
+</section>
+<section class="panel upload-panel page-section form-section" aria-labelledby="agent-heading">
+<h2 id="agent-heading"><span class="step-number">3</span>Agent</h2>
+{% set chosen = form.get('runner') if form.get('runner') in runners else ('claude' if available.claude else 'codex') %}
+<fieldset class="report-mode"><legend>Agent</legend>
+{% for key, runner in runners.items() %}
+<label class="choice"><input type="radio" name="runner" value="{{ key }}" required {% if key == chosen %}checked{% endif %} {% if not available[key] %}disabled{% endif %}
+  data-efforts='{{ runner.efforts | list | tojson }}' data-model-hint="{{ runner.model_hint }}">
+<span><strong>{{ runner.label }}</strong><span class="hint">{% if available[key] %}{{ 'Signed-in Claude Code (`claude`)' if key == 'claude' else 'Signed-in Codex CLI (`codex`)' }}{% else %}Not installed or not on PATH{% endif %}</span></span></label>
+{% endfor %}
+</fieldset>
+<label>Model<input name="model" id="agent-model" value="{{ form.get('model', '') }}" placeholder="{{ runners[chosen].model_hint }}" autocomplete="off"></label>
+<label>Reasoning effort<select name="effort" id="agent-effort"><option value="">CLI default</option>
+{% for level in runners[chosen].efforts %}<option value="{{ level }}" {% if form.get('effort') == level %}selected{% endif %}>{{ level }}</option>{% endfor %}</select></label>
+<label class="checkbox"><input type="checkbox" name="full_access" {% if form.get('full_access') %}checked{% endif %}>Full access: no sandbox and no permission checks</label>
+<p class="hint">By default Claude Code runs in <em>auto</em> permission mode and Codex in its workspace sandbox with network access.
+Full access lets the agent run any command on this computer; use it only if a run stalls on refused actions.
+Contamination precautions, not isolation: Claude Code starts without your auto-memory or CLAUDE.md files, and Codex
+keeps no session. The agent can still read files its permissions allow, including the report's folder.</p>
+<p id="agent-message" role="status" aria-live="polite"></p>
+<button type="submit">Start agent run →</button>
+</section>
+</form>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='agent-run.js') }}" defer></script>{% endblock %}

@@ -61,6 +61,22 @@ Run through self-evaluation:
 python -m multi_hazard_pipeline run INPUT_DIR results
 ```
 
+### Choosing the model provider
+
+`TW_LLM_PROVIDER` selects the provider for every model call (extraction, review, splitting, localization):
+
+| `TW_LLM_PROVIDER` | Service | Credentials | Default model |
+| --- | --- | --- | --- |
+| `openai` (default) | the self-hosted OpenAI-compatible router at `TW_LLM_API_BASE_URL` | `TW_LLM_API_KEY` | `nvidia/Qwen3.8-27B-NVFP4` |
+| `anthropic` | the Claude API (Messages) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` |
+
+```powershell
+$env:TW_LLM_PROVIDER = "anthropic"
+$env:ANTHROPIC_API_KEY = "..."
+```
+
+`localize` and `analyze-image` also take `--provider` and `--model`; the interface forms have provider, model and effort fields. With Claude, `reasoning_effort` is sent as the effort level (default `medium`) and the shared request context is prompt-cached.
+
 The legacy two-argument form remains valid. A passing candidate stops at `awaiting_human_review`; it is not yet a success or approved export.
 
 Human operations use the same backend as the web interface:
@@ -204,11 +220,11 @@ All local outputs belong in `results/`, which is excluded by `.gitignore`. The l
 
 The smoke check uses synthetic inputs and temporary outputs. `check_example.py` is an optional local integration check requiring `results/inputs/tmp_single_input/Schnannerbach_extract1.docx` and a live API key; it replaces `results/example_check` when run.
 
-Processing requires `TW_LLM_API_BASE_URL` and `TW_LLM_API_KEY` in the environment before starting the application. Use a compatible chat-completions service; the client appends `/chat/completions` to the base URL. Configure the model in `multi_hazard_pipeline/config.py`. 
+Processing with the default provider requires `TW_LLM_API_BASE_URL` and `TW_LLM_API_KEY` in the environment before starting the application (see *Choosing the model provider* for the Claude API). Use a compatible chat-completions service; the client appends `/chat/completions` to the base URL. Configure the model in `multi_hazard_pipeline/config.py`. 
 
 ## GIS placement of segments (`segment_mapping`)
 
-The [segment_mapping](segment_mapping/README.md) toolkit places approved segments on a map: report inspection, data download (any region; Land Tirol preset), terrain models, figure georeferencing, mixed geometry GeoJSON + evidence CSV, polygon-only compatibility shapefile, interactive map, report and reviewer ZIP. All run-specific decisions are data in `scripts/placements.json` ([SPEC.md](segment_mapping/SPEC.md)), so a model never writes code. Generate a task prompt with `python -m segment_mapping prompt ...` (template: `segment_mapping/prompt_template.txt`; see the toolkit README).
+The [segment_mapping](segment_mapping/README.md) toolkit places approved segments on a map: report inspection, data download (any region; Land Tirol preset), terrain models, figure georeferencing, mixed geometry GeoJSON + evidence CSV, polygon-only compatibility shapefile, interactive map, report and reviewer ZIP. All run-specific decisions are data in `scripts/placements.json` ([SPEC.md](segment_mapping/SPEC.md)), so a model never writes code. Generate a task prompt with `python -m segment_mapping prompt ...` (template: `segment_mapping/prompt_template.txt`; see the toolkit README), or run it unattended with Claude Code or Codex using `python -m segment_mapping agent --runner claude|codex ...`.
 
 To localize an approved run with text and report pictures, use:
 
@@ -220,7 +236,7 @@ python -m multi_hazard_pipeline localize RUN_DIR --package package.json --resume
 
 Localization uses `http://llm.igf.oeaw.ac.at/v1/responses`, the configured model and existing `TW_LLM_API_KEY`. Override with `--api-base-url` or `--model`. Use `--text-only` to disable pictures and use the configured text API. Missing or unreadable report files/pages are logged and the available text evidence is retained; API failures are reported rather than silently changing modes.
 
-The frame call, segment calls, corrections and self-review receive up to eight rendered pages each (1600 pixels on the longest side). Selection starts with the call's text evidence pages, then neighboring pages in the same source PDF, then remaining report pages in input order. Pages without extracted text are eligible. This is bounded inspection, not a guarantee that every relevant figure has been seen. Review uses each segment's original attachments. Source PDFs must remain at the manifest's input paths; duplicate filenames across inputs are skipped as ambiguous.
+Vision mode sends the extracted text together with the figures and photos embedded in the report PDF (not pictures of whole pages), each with its page and the captions on that page. The frame, segment and correction calls receive up to eight figures from their evidence pages and the neighboring pages; the self-review receives only the figures the answer cites. Logos repeated on several pages are skipped, and captioned figures drawn as vector graphics are listed as not seen. Source PDFs must remain at the manifest's input paths; duplicate filenames across inputs are skipped as ambiguous.
 
 Visual observations retain source IDs, source filenames, original file pages and available printed/text page mappings. They appear in the evidence CSV and report, separately from exact text quotations. Geometry and confidence rules still apply: vision helps interpret evidence and choose GIS candidates; it does not invent coordinates, digitize outlines or measure distances from pixels. `--figure-manifest reviewed_outlines.json` additionally offers analyst-reviewed pixel outlines through the verified figure workflow: explicit event/date interpretation, independently checked georeferencing, and an explicit link to original segment IDs are required. Each part still requires a verified original-language quotation.
 
@@ -230,7 +246,7 @@ Every input segment receives a `located` or `unresolved` result with a reason an
 
 `--allow-network` permits bounded GIS requests only to providers declared in the spatial package; it is not generic web search. Source URLs and field mappings are configured by the caller. See [package acquisition and reviewed outline examples](segment_mapping/README.md#optional-public-data-acquisition).
 
-Results go to `RUN_DIR/localization/` and leave approved rows unchanged. Existing localization folders are preserved: use `--resume` to restore checkpoints when the approved artifacts, package/source fingerprints, optional segment table, figure inputs and relevant settings match. Changed inputs require a fresh run folder. `llm/image_inventory.json` records attached/uninspected pages and rendering failures; `llm/images/` preserves the rendered attachments, and call JSON records their order without base64 payloads. Tests: `python -m unittest test_localization_stage test_segment_mapping test_localization_outcomes test_vision`.
+Results go to `RUN_DIR/localization/` and leave approved rows unchanged. Existing localization folders are preserved: use `--resume` to restore checkpoints when the approved artifacts, package/source fingerprints, optional segment table, figure inputs and relevant settings match. Changed inputs require a fresh run folder. `llm/image_inventory.json` records the extracted figures, which were attached and any extraction failures; `llm/images/` preserves them, and call JSON records their order without base64 payloads. Tests: `python -m unittest test_localization_stage test_segment_mapping test_localization_outcomes test_vision`.
 
 For the full offline suite, including the spatial acquisition and preflight tests, install the optional test runner and run:
 

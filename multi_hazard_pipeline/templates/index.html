@@ -13,6 +13,8 @@
 <span>Upload a report, review the extracted events, approve and download them. Approved reports can then be placed on a map.</span></a>
 <a class="workflow-card" href="{{ url_for('new_localization') }}"><span class="eyebrow">LOCALIZATION ONLY</span><strong>Test localization with your own data →</strong>
 <span>Use your own segment table, report and GIS data (spatial package, or catchment, streams and DEM files). Extraction and review are skipped.</span></a>
+<a class="workflow-card" href="{{ url_for('new_agent_run') }}"><span class="eyebrow">FREE AGENT</span><strong>Map segments with Claude Code or Codex →</strong>
+<span>An agent works through the mapping toolkit on its own, using the CLI's own sign-in. Its map can be compared with pipeline runs.</span></a>
 </div>
 <ol class="workflow-strip" aria-label="Analysis workflow">
   <li class="is-active"><span>1</span><strong>Source reports</strong></li>
@@ -41,6 +43,10 @@
     </label>
     <p class="selected-files hint" id="selected-files" aria-live="polite">No files selected</p>
     <p class="hint upload-guidance">Multiple files are supported when they belong to the same report.</p>
+    <details class="advanced-input"><summary>Model: {{ llm_providers[default_provider].label }} · {{ provider_models[default_provider] }} (change)</summary>
+      <div class="details-body">{% set settings = {} %}{% include "_model_options.html" %}
+      <p class="hint">Corrections and edits of this report later use the same provider and model.</p></div>
+    </details>
     <details class="advanced-input"><summary>Advanced: use an existing folder</summary>
       <div class="details-body"><label>Existing input directory
         <input type="text" name="input_dir" placeholder="C:\reports\one-report" autocomplete="off">
@@ -60,7 +66,7 @@
     <a class="run-card" href="{{ run.url or url_for('run_detail', run_id=run.run_id) }}">
       <span class="run-card__main"><strong>{% if run.kind == 'localization' %}<span class="kind-tag">Localization test</span> {% elif run.kind == 'agent' %}<span class="kind-tag">Agent run</span> {% endif %}{{ run.title }}</strong><span class="run-activity">{{ run.activity }}{% if run.kind in ['localization', 'agent'] and run.subtitle %} · {{ run.subtitle }}{% endif %}</span></span>
       <span class="run-card__meta"><span class="badges"><span class="badge">{{ run.status_label }}</span>{% if run.localization %}<span class="badge badge-map">Map: {{ run.localization | replace('_', ' ') }}</span>{% endif %}</span>{% if run.kind not in ['localization', 'agent'] %}<span class="progress-value">{{ run.progress }}%</span>{% endif %}</span>
-      <span class="run-card__foot"><small>{% if run.kind == 'localization' %}Localization test{% elif run.kind == 'agent' %}Agent localization{% elif run.collection %}Collection · {{ run.report_count }} report(s){% else %}Single report{% endif %}</small><code>{{ run.run_id }}</code></span>
+      <span class="run-card__foot"><small>{% if run.kind == 'localization' %}Localization test{% elif run.kind == 'agent' and run.subtitle == 'Started here' %}Free agent run{% elif run.kind == 'agent' %}Agent localization{% elif run.collection %}Collection · {{ run.report_count }} report(s){% else %}Single report{% endif %}</small><code>{{ run.run_id }}</code></span>
     </a>
     {% set busy = run.status in ['running', 'queued'] %}
     <button type="button" class="delete-run quiet-danger" data-url="{{ url_for('delete_run', run_id=run.run_id) }}"
@@ -89,4 +95,5 @@
 </section>
 {% endblock %}
 {% block scripts %}<script src="{{ url_for('static', filename='upload.js') }}" defer></script>
+<script src="{{ url_for('static', filename='model-options.js') }}" defer></script>
 <script src="{{ url_for('static', filename='delete.js') }}" defer></script>{% endblock %}

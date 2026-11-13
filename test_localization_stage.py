@@ -234,19 +234,23 @@ class LocalizationStageTests(TestCase):
         from PIL import Image
         from multi_hazard_pipeline.agents.localization_agent import localize_run
 
-        picture = Image.new("RGB", (160, 120), "red")
-        picture.save(self.tmp / "report.pdf", save_all=True, append_images=[picture, picture, picture])
-        picture.close()
+        figures = [Image.new("RGB", (320, 240), colour) for colour in ("red", "green", "blue", "yellow")]
+        figures[0].save(self.tmp / "report.pdf", save_all=True, append_images=figures[1:])  # one distinct figure per page
+        for figure in figures:
+            figure.close()
         before = (self.pipe / "final_rows.json").read_bytes()
         model = FakeModel()
         res = localize_run(self.pipe, self.pkg, client=model, browser_check=False, log=lambda m: None)
         self.assertEqual(res["status"], "delivered", res.get("build"))
         self.assertEqual(model.calls, ["localization_evidence", "localization_frame"] + ["segment_placement"] * 3 + ["localization_review"] * 3)
-        self.assertTrue(all(len(r["images"]) == (0 if r["name"] == "localization_evidence" else 4) for r in model.requests))
+        # Evidence pages and their neighbours only; reviews get just the pages the answer cites.
+        self.assertEqual([len(r["images"]) for r in model.requests], [0, 3, 2, 3, 3, 1, 1, 1])
         placements = [r for r in model.requests if r["name"] == "segment_placement"]
         reviews = [r for r in model.requests if r["name"] == "localization_review"]
         self.assertEqual([r["payload"]["image_sources"][0]["file_page"] for r in placements], [1, 3, 2])
-        self.assertEqual([r["images"] for r in placements], [r["images"] for r in reviews])
+        self.assertEqual([[s["file_page"] for s in r["payload"]["image_sources"]] for r in reviews], [[1], [3], [2]])
+        for placement, review in zip(placements, reviews):
+            self.assertEqual(review["images"], placement["images"][:1])
         loc = self.pipe / "localization"
         inventory = json.loads((loc / "llm/image_inventory.json").read_text(encoding="utf-8"))
         self.assertIsNone(inventory["sources"][3]["page"])  # image-only page has no invented text-page mapping
@@ -453,9 +457,10 @@ class LocalizationStageTests(TestCase):
         from PIL import Image
         from multi_hazard_pipeline.agents.localization_agent import localize_run
 
-        picture = Image.new("RGB", (160, 120), "red")
-        picture.save(self.tmp / "report.pdf", save_all=True, append_images=[picture, picture, picture])
-        picture.close()
+        figures = [Image.new("RGB", (320, 240), colour) for colour in ("red", "green", "blue", "yellow")]
+        figures[0].save(self.tmp / "report.pdf", save_all=True, append_images=figures[1:])  # one distinct figure per page
+        for figure in figures:
+            figure.close()
 
         class OneIssue(FakeModel):
             reviewed = []
@@ -498,49 +503,67 @@ class RunPageTests(TestCase):
 
 
 class VisionSourceTests(TestCase):
-    def test_companion_pdf_mapping_limit_and_cache(self):
+    def test_embedded_figures_with_provenance_captions_and_neighbours(self):
+        import base64
+        from io import BytesIO
         from PIL import Image
-        from unittest.mock import patch
-        from multi_hazard_pipeline.agents.localization_vision import ReportImages
-        from multi_hazard_pipeline.vision import load_images
+        from multi_hazard_pipeline.agents.localization_vision import MAX_EDGE_PX, ReportImages
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            with Image.new("RGB", (80, 100), "red") as red, Image.new("RGB", (80, 100), "blue") as blue:
-                red.save(root / "report.pdf", save_all=True, append_images=[red] * 9)
+            # report.pdf: pages 1-3 repeat one picture (a logo: dropped), page 4 is an icon (too small: dropped),
+            # pages 5-10 hold distinct figures, page 10 a very wide one. companion.pdf: one figure.
+            pictures = [Image.new("RGB", (320, 240), "grey") for _ in range(3)] + [Image.new("RGB", (80, 100), "black")]
+            pictures += [Image.new("RGB", (320, 240), (40 * k, 200 - 30 * k, 90)) for k in range(5)]
+            pictures += [Image.new("RGB", (3000, 400), "purple")]
+            pictures[0].save(root / "report.pdf", save_all=True, append_images=pictures[1:])
+            with Image.new("RGB", (320, 240), "blue") as blue:
                 blue.save(root / "companion.pdf")
             pages = [{"pdf_page": 1, "file": "report.pdf", "file_page": 7, "printed_page": 133},
-                     {"pdf_page": 2, "file": "companion.pdf", "file_page": 1, "printed_page": 44}]
+                     {"pdf_page": 2, "file": "companion.pdf", "file_page": 1, "printed_page": 44},
+                     {"pdf_page": 3, "file": "report.pdf", "file_page": 2, "printed_page": 128}]
+            captions = [{"kind": "Abbildung", "pdf_page": 1, "caption": "Abbildung 70: Ablagerungen"},
+                        {"kind": "Abbildung", "pdf_page": 3, "caption": "Abbildung 65: Längsprofil"},
+                        {"kind": "Tabelle", "pdf_page": 3, "caption": "Tabelle 8: Chronik"}]
             reports = ReportImages({"inputs": [{"path": str(root / f)} for f in ("report.pdf", "companion.pdf")]},
-                                   pages, root / "llm/images", lambda m: None)
-            with patch("multi_hazard_pipeline.agents.localization_vision.load_images", wraps=load_images) as render:
-                images, sources = reports.attach(reports.select([2, 1]))
-                count = render.call_count
-                repeated, _ = reports.attach([s["source_id"] for s in sources])
-                self.assertEqual(render.call_count, count)
-            self.assertEqual(len(images), 8)
+                                   pages, root / "llm/images", lambda m: None, captions=captions)
+            self.assertEqual([(s["filename"], s["file_page"]) for s in reports.sources.values()],
+                             [("report.pdf", n) for n in range(5, 11)] + [("companion.pdf", 1)])
+            images, sources = reports.attach(reports.select([2, 1]))
+            repeated, _ = reports.attach([s["source_id"] for s in sources])
             self.assertEqual(images, repeated)
-            self.assertEqual([(s["filename"], s["file_page"], s["page"], s["printed_page"]) for s in sources[:2]],
-                             [("companion.pdf", 1, 2, 44), ("report.pdf", 7, 1, 133)])
-            self.assertEqual([s["file_page"] for s in sources[2:4]], [6, 8])
-            self.assertEqual(len(reports.summary()["uninspected"]), 3)
+            self.assertEqual([(s["filename"], s["file_page"], s["page"], s["printed_page"]) for s in sources],
+                             [("companion.pdf", 1, 2, 44), ("report.pdf", 7, 1, 133), ("report.pdf", 6, None, None),
+                              ("report.pdf", 8, None, None)])
+            self.assertEqual(sources[1]["captions_on_page"], ["Abbildung 70: Ablagerungen"])
+            self.assertTrue(all(s["kind"] == "report figure" and "path" not in s for s in sources))
+            with Image.open(BytesIO(base64.b64decode(images[0].split(",", 1)[1]))) as figure:
+                self.assertEqual((figure.format, figure.size), ("JPEG", (320, 240)))
+            wide = next(s for s in reports.sources.values() if s["file_page"] == 10)
+            self.assertEqual(wide["width"], MAX_EDGE_PX)
+            summary = reports.summary()
+            self.assertEqual(len(summary["uninspected"]), 3)
+            # Page 2 has a figure caption but only the logo: a vector figure, listed, never rendered. Tables are text.
+            self.assertEqual([f["caption"] for f in summary["vector_figures_not_attached"]], ["Abbildung 65: Längsprofil"])
+            self.assertEqual(reports.select([99]), [])  # no figure on the evidence pages: the call is text-only
 
-    def test_render_failure_is_recorded_and_not_retried(self):
+    def test_picture_inputs_and_unreadable_files(self):
         from PIL import Image
-        from unittest.mock import patch
         from multi_hazard_pipeline.agents.localization_vision import ReportImages
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            with Image.new("RGB", (50, 50)) as pic:
-                pic.save(root / "picture.png")
-            reports = ReportImages({"inputs": [{"path": str(root / "picture.png")}]}, [], root / "llm/images", lambda m: None)
-            with patch("multi_hazard_pipeline.agents.localization_vision.load_images", side_effect=ValueError("bad image")) as render:
-                self.assertEqual(reports.attach(reports.select([])), ([], []))
-                self.assertEqual(reports.attach(reports.select([])), ([], []))
-                self.assertEqual(render.call_count, 1)
-            self.assertIn("bad image", reports.summary()["errors"][0])
-            self.assertEqual(len(reports.summary()["uninspected"]), 1)
+            with Image.new("RGB", (400, 300), "green") as photo, Image.new("RGB", (50, 50)) as icon:
+                photo.save(root / "photo.png")
+                icon.save(root / "icon.png")
+            (root / "broken.jpg").write_bytes(b"not an image")
+            reports = ReportImages({"inputs": [{"path": str(root / f)} for f in ("photo.png", "icon.png", "broken.jpg")]},
+                                   [], root / "llm/images", lambda m: None)
+            self.assertEqual([s["filename"] for s in reports.sources.values()], ["photo.png", "icon.png"])
+            images, sources = reports.attach(reports.select([]))  # separate pictures are always offered
+            self.assertEqual(len(images), 2)
+            self.assertEqual(len(reports.summary()["errors"]), 1)
+            self.assertIn("broken.jpg", reports.summary()["errors"][0])
 
     def test_ambiguous_filenames_are_not_attached(self):
         from multi_hazard_pipeline.agents.localization_vision import ReportImages
@@ -594,6 +617,33 @@ class PointTokenTests(TestCase):
         self.assertEqual(comp.point("source", line="S4"), {"end": "S4"})
         self.assertEqual(comp.point("confluence:S4", line="S4"), {"start": "S4"})
         self.assertEqual(comp.point("confluence:S4"), {"endpoint_near": {"line": "S4", "to": "S1"}})
+
+    def test_hm_stations_count_from_the_mouth_without_anchors(self):
+        from segment_mapping.templates import Compiler
+
+        facts = {"candidates": [{"id": "S1", "kind": "streams", "name": "Main", "expr": {}, "layer": "s"},
+                                {"id": "C1", "kind": "catchment", "name": "Main", "expr": {}, "layer": "c"}]}
+        comp = Compiler(facts, {"main_stream": "S1", "catchment": "C1", "named_features": [], "chainage_anchors": []}, {}, chainage=True)
+        anchors = comp.chainages()["hm"]["anchors"]
+        self.assertEqual([(a["value"], a["at"]) for a in anchors], [(0.0, "start")])
+        self.assertEqual(comp.point("hm:6"), {"chainage_point": {"chainage": "hm", "at": 6.0}})
+        part = comp.compile_part("3", "3a", {"method": "reach_corridor", "args": {"from_point": "hm:6", "to_point": "hm:32"},
+                                             "parameter": {"value": 3, "basis": "assumption"}, "is_hypo": 1, "confidence": "low"})
+        self.assertEqual(part["geometry"]["terrain"]["channels"][0], {"reach": {"chainage": "hm", "from": 6.0, "to": 32.0}})
+
+    def test_location_methods_get_location_role_when_adjusting(self):
+        from segment_mapping.templates import Compiler, TemplateError
+
+        facts = {"candidates": [{"id": "S1", "kind": "streams", "name": "Main", "expr": {}, "layer": "s"},
+                                {"id": "C1", "kind": "catchment", "name": "Main", "expr": {}, "layer": "c"}]}
+        comp = Compiler(facts, {"main_stream": "S1", "catchment": "C1", "named_features": []}, {}, chainage=True)
+        ans = {"method": "channel_reach", "args": {"from_point": "hm:1", "to_point": "hm:5"}, "geometry_role": "event_extent",
+               "is_hypo": 1, "confidence": "low", "reason_confidence": "Reach named by stations."}
+        with self.assertRaises(TemplateError):
+            comp.compile_part("3", "3a", dict(ans))
+        part = comp.compile_part("3", "3a", dict(ans), adjust=True)
+        self.assertEqual(part["geometry_role"], "location")
+        self.assertIn("geometry_role set to location", part["reason_confidence"])
 
     def test_hm_on_tributary_is_projected_and_distance_checked(self):
         from segment_mapping.templates import Compiler

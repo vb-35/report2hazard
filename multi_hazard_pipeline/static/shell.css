@@ -3,6 +3,7 @@
 [data-workflow="reports"] { --workflow-background: #f7f9fc; }
 [data-workflow="localization"] { --workflow-background: #f0f7f3; }
 [data-workflow="compare"] { --workflow-background: #f8f3ed; }
+[data-workflow="agent"] { --workflow-background: #f3f1f9; }
 body[data-workflow] { background-color: var(--workflow-background); }
 body > .site-header { min-height: 62px; padding: 0; border-bottom: 1px solid #e4e4e7; background: rgb(255 255 255 / 94%); color: #18181b; }
 .site-header__inner { width: min(1268px, calc(100% - 48px)); max-width: none; padding-inline: 0; min-height: 62px; margin: auto; display: flex; align-items: center; justify-content: space-between; }

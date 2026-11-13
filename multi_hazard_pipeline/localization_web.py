@@ -4,13 +4,14 @@ from __future__ import annotations
 import io
 import re
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 from flask import abort, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
 from . import provided_localization as provided
-from .config import PipelineConfig
+from .config import PipelineConfig, llm_from_choices
 from .core import bounded_filename, read_json, resolve_path, run_lock, worker_marker
 from .errors import PipelineError
 from .pipeline import new_run_id, save_manifest, utc_now
@@ -86,7 +87,9 @@ def _options(package: str | None = None, segments_table: str | None = None) -> d
         review=request.form.get("review") == "on",
         browser_check=request.form.get("browser_check") == "on",
         allow_network=request.form.get("allow_network") == "on",
+        provider=request.form.get("provider", "").strip() or None,
         model=request.form.get("model", "").strip() or None,
+        reasoning_effort=request.form.get("effort", "").strip().lower() or None,
         api_base_url=request.form.get("api_base_url", "").strip() or None,
         max_output_tokens=tokens,
     )
@@ -119,6 +122,8 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
         from segment_mapping.package import load_package
 
         load_package(options["package"], verify=False)
+        run_config = replace(config, llm=llm_from_choices(config.llm, options.get("provider"), options.get("model"),
+                                                          options.get("reasoning_effort")))
         with run_lock(run_dir):
             manifest = read_json(run_dir / "manifest.json")
             standalone = provided.is_provided(manifest)
@@ -159,7 +164,7 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
             try:
                 update(status="running", activity="Preparing localization")
                 if standalone:
-                    provided.prepare_provided_run(run_dir, config, translate=bool(translate), log=log)
+                    provided.prepare_provided_run(run_dir, run_config, translate=bool(translate), log=log)
                 result = localize_run(run_dir, config=config, log=log, **options)
                 update(**result, activity="Localization finished")
                 provided.finish_stage(run_dir, "completed")
@@ -214,7 +219,8 @@ def register_localization(app, config: PipelineConfig, get_run_dir) -> None:
         # Keep the user's choices when the form is shown again after an error.
         settings = dict(vision=form.get("mode", "vision") == "vision", review=form.get("review") == "on",
                         browser_check=form.get("browser_check") == "on", allow_network=form.get("allow_network") == "on",
-                        model=form.get("model"), api_base_url=form.get("api_base_url"),
+                        provider=form.get("provider"), model=form.get("model"), effort=form.get("effort"),
+                        api_base_url=form.get("api_base_url"),
                         max_output_tokens=form.get("max_output_tokens"), figure_manifest=form.get("figure_manifest"),
                         only=[value.strip() for value in form.get("only", "").split(",") if value.strip()]) if form else {}
         return render_template("localization_new.html", form=form, settings=settings, show_table=False, error=error,

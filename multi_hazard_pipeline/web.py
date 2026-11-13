@@ -7,13 +7,14 @@ import re
 import shutil
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 from werkzeug.utils import secure_filename
 
-from .config import DEFAULT_CONFIG, PipelineConfig
+from .config import DEFAULT_CONFIG, EFFORT_LEVELS, PROVIDERS, PipelineConfig, llm_from_choices, setting_from_env
 from .core import bounded_filename, display_path, read_json, resolve_path, run_lock, worker_alive, worker_marker
 from .errors import PipelineError
 from .human_review import apply_candidate_edits, approve_run, reject_run, request_correction
@@ -153,7 +154,13 @@ def _recover_interrupted(root: Path) -> list[str]:
             with run_lock(run_dir):
                 manifest = read_json(path)
                 changed = False
-                if manifest.get("status") in {"running", "queued"} and worker_alive(manifest.get("worker")) is False:
+                launched_agent = (manifest.get("agent") or {}).get("launched")
+                if (manifest.get("status") in {"running", "queued"} | ({"stopping"} if launched_agent else set())
+                        and worker_alive(manifest.get("worker")) is False):
+                    if launched_agent:
+                        # The agent process may still be working, but nothing records or reports it any more.
+                        manifest.update(activity="Interrupted: the interface stopped while the agent was running",
+                                        error=INTERRUPTED + "; start a new agent run", finished_at=utc_now())
                     stage = manifest.get("current_stage") or "pipeline"
                     manifest["status"] = "failed"
                     if manifest.get("stages", {}).get(stage) in {"running", "queued", "pending"}:
@@ -317,6 +324,18 @@ def _list_runs(root: Path) -> list[dict[str, Any]]:
                 "status_label": status_label(info.get("status")), "activity": info.get("activity") or "",
                 "subtitle": _title(manifest), "created_at": manifest.get("created_at", ""),
                 "url": url_for("localization_detail", run_id=manifest.get("run_id")),
+            })
+        elif manifest.get("kind") == "agent_localization" and (manifest.get("agent") or {}).get("launched"):
+            from .agent_runs import STATUS_LABELS as AGENT_STATUS
+
+            agent = manifest.get("agent") or {}
+            runs.append({
+                "run_id": manifest.get("run_id"), "title": f"{manifest.get('event') or 'Report'} · {agent.get('model', 'agent')}",
+                "collection": False, "kind": "agent", "status": manifest.get("status") or "queued",
+                "status_label": AGENT_STATUS.get(manifest.get("status"), manifest.get("status")),
+                "activity": manifest.get("activity") or "", "subtitle": "Started here",
+                "created_at": manifest.get("created_at", ""),
+                "url": url_for("agent_run_detail", run_id=manifest.get("run_id")),
             })
         elif manifest.get("kind") == "agent_localization":
             agent = manifest.get("agent") or {}
@@ -497,6 +516,12 @@ def create_app(
             return index_error("Choose whether this is a single report or a multi-report collection.")
         if bool(uploads) == bool(input_dir):
             return index_error("Choose uploaded files or one existing input directory.")
+        try:
+            # Recorded in the manifest, so corrections and edits of this run keep the same provider and model.
+            run_config = replace(config, llm=llm_from_choices(config.llm, request.form.get("provider"),
+                                                              request.form.get("model"), request.form.get("effort")))
+        except PipelineError as exc:
+            return index_error(str(exc))
         upload_dir = None
         try:
             run_id = new_run_id()
@@ -522,7 +547,7 @@ def create_app(
             if report_mode == "multi" and (len(selected) != 1 or selected[0].suffix.lower() != ".pdf"):
                 raise PipelineError("A multi-report collection must be exactly one PDF file.")
             manifest = create_run(
-                source_dir, root, config, input_paths=selected,
+                source_dir, root, run_config, input_paths=selected,
                 doc_id=_uploaded_report_id(selected) if uploads else None,
             )
         except (OSError, PipelineError) as exc:
@@ -536,7 +561,7 @@ def create_app(
             # A collection only separates reports; each report gets its own child run.
             manifest["stages"] = {"preparation": "pending"}
             save_manifest(run_dir, manifest)
-            _submit(app, "preparation", run_dir, _prepare_collection, run_dir, config)
+            _submit(app, "preparation", run_dir, _prepare_collection, run_dir, run_config)
         else:
             save_manifest(run_dir, manifest)
             _submit(app, "pipeline", run_dir, execute_run, run_dir, config)
@@ -551,6 +576,8 @@ def create_app(
         if is_provided(manifest):
             # A localization test has no extraction to review.
             return redirect(url_for("localization_detail", run_id=run_id))
+        if (manifest.get("agent") or {}).get("launched"):
+            return redirect(url_for("agent_run_detail", run_id=run_id))
         status = _display_status(manifest)
         return render_template(
             "run.html",
@@ -724,9 +751,20 @@ def create_app(
             abort(404)
         return send_file(path, as_attachment=True, download_name=artifact)
 
+    @app.context_processor
+    def model_choices():
+        """Provider, model and effort choices shared by every form that starts model work."""
+        models = {key: info["model"] for key, info in PROVIDERS.items()}
+        models[config.llm.provider] = config.llm.model
+        return dict(llm_providers=PROVIDERS, default_provider=config.llm.provider, provider_models=models,
+                    effort_levels=EFFORT_LEVELS, default_effort=config.llm.reasoning_effort,
+                    provider_keys={key: bool(setting_from_env(info["api_key_env_var"])) for key, info in PROVIDERS.items()})
+
+    from .agent_web import register_agent_runs
     from .localization_web import register_localization
 
     register_localization(app, config, lambda run_id: _run_dir(app, run_id))
+    register_agent_runs(app, lambda run_id: _run_dir(app, run_id))
     return app
 
 

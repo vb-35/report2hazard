@@ -252,6 +252,7 @@ def _apply_candidate_edits_unlocked(
     validate_only: bool = False,
 ) -> dict[str, Any]:
     run_dir, manifest, human = load_run(artifact_dir)
+    config = recorded_language_config(config, manifest)
     eligible = manifest["status"] in {"awaiting_human_review", "revision_required"} or (
         manifest["status"] == "running" and manifest["current_stage"] == "self_evaluation"
     )

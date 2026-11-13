@@ -119,7 +119,7 @@ def cmd_import(a):
     _print({x: rec.get(x) for x in ("name", "kind", "count", "file", "resolution_m", "role", "note")})
 
 
-def cmd_prompt(a):
+def build_prompt(a) -> str:
     """Fill segment_mapping/prompt_template.txt for one mapping task (no run folder is created)."""
     project = Path(__file__).resolve().parents[1]
     template = (Path(__file__).with_name("prompt_template.txt")).read_text(encoding="utf-8")
@@ -152,6 +152,13 @@ def cmd_prompt(a):
            .replace("[report PDF path]", str(report))
            .replace("[run folder]", str(run_dir))
            .replace("[project folder]", str(project)))
+    return out
+
+
+def cmd_prompt(a):
+    """Print the filled mapping prompt, or write it to --out."""
+    project = Path(__file__).resolve().parents[1]
+    out = build_prompt(a)
     if a.out:
         Path(a.out).write_text(out, encoding="utf-8")
         print(f"Prompt written to {a.out}", file=sys.stderr)
@@ -159,6 +166,14 @@ def cmd_prompt(a):
         print(out)
     print("Reminder: for a blind run, keep worked answers for this report (earlier run folders, answer keys) out of "
           f"{project}.", file=sys.stderr)
+
+
+def cmd_agent(a):
+    from .agent_launch import launch
+
+    print("Reminder: for a blind run, keep worked answers for this report (earlier run folders, answer keys) out of "
+          f"{Path(__file__).resolve().parents[1]}.", file=sys.stderr)
+    raise SystemExit(launch(a, build_prompt(a))["exit_code"])
 
 
 def cmd_import_package(a):
@@ -532,6 +547,20 @@ def build_parser():
     s.add_argument("--catchment", help="provided catchment outline file")
     s.add_argument("--catchment-info", help="catchment name/code/area and other information")
     s.add_argument("--out", help="write the prompt to this file")
+    s = add("agent", cmd_agent, "run the mapping prompt unattended with Claude Code or Codex (a free agent run)", run=False)
+    s.add_argument("--runner", required=True, choices=("claude", "codex"), help="agent CLI that performs the run")
+    s.add_argument("--report", required=True)
+    s.add_argument("--run", required=True, help="new run folder for this model/run")
+    s.add_argument("--segments", required=True, help="TSV/CSV segment table with header row")
+    s.add_argument("--dem", help="provided DEM file")
+    s.add_argument("--dem-info", help="DEM description (source, resolution, CRS, licence)")
+    s.add_argument("--catchment", help="provided catchment outline file")
+    s.add_argument("--catchment-info", help="catchment name/code/area and other information")
+    s.add_argument("--model", help="model passed to the agent CLI (default: the CLI's own default)")
+    s.add_argument("--effort", help="reasoning effort passed to the agent CLI (e.g. low, medium, high, xhigh)")
+    s.add_argument("--full-access", action="store_true",
+                   help="no sandbox and no permission checks (claude: bypassPermissions; codex: bypass approvals and sandbox)")
+    s.add_argument("--dry-run", action="store_true", help="write the prompt and print the command without starting the agent")
     s = add("import-package", cmd_import_package, "import a spatial package (package.json with layers, rasters, roles, name fields)")
     s.add_argument("package")
     s = add("export-package", cmd_export_package, "write the run's data as a reusable spatial package")
@@ -682,7 +711,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     a = build_parser().parse_args(argv)
     run_dir = getattr(a, "run", None)
-    if run_dir and a.cmd not in ("locate", "prompt") and Path(run_dir, "run.json").exists() or a.cmd == "init":
+    if run_dir and a.cmd not in ("locate", "prompt", "agent") and Path(run_dir, "run.json").exists() or a.cmd == "init":
         try:
             Run(run_dir).log_command(argv)
         except Exception:

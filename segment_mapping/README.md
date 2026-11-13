@@ -34,6 +34,21 @@ Use the project environment: `.venv\Scripts\python.exe -m segment_mapping ...` f
 4. Give `prompt.txt` to the model. Its working directory must be the project folder, and it needs shell and file tools and the ability to view images.
 5. For a blind/comparative run, first move worked answers for that report out of the project folder: earlier run folders in `output/`, answer keys.
 
+### Unattended run with Claude Code or Codex
+
+`agent` fills the same prompt and hands it to an agent CLI, using that CLI's own sign-in (subscription or API key):
+
+```
+.venv\Scripts\python.exe -m segment_mapping agent --runner claude --report REPORT.pdf --segments SEGMENTS.tsv --run output\EVENT_opus ^
+    [--model claude-opus-5-5] [--effort high] [--dem ... --dem-info ...] [--catchment ... --catchment-info ...] [--dry-run]
+.venv\Scripts\python.exe -m segment_mapping agent --runner codex --report REPORT.pdf --segments SEGMENTS.tsv --run output\EVENT_codex [--model ...]
+```
+
+- Logs go to `RUN/agent/` (prompt, event transcript, final message, `agent_run.json`), outside the review ZIP.
+- Claude Code runs in `auto` permission mode, Codex in its `workspace-write` sandbox with network access. `--full-access` removes these checks; use it only on a machine the agent may change.
+- Blind runs: Claude Code starts without auto-memory or CLAUDE.md files, but this is not isolation. Step 5 still applies.
+- `--dry-run` writes the prompt and prints the command without starting the agent.
+
 ## Workflow
 
 | Step | Command | Output |

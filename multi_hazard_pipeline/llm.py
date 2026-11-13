@@ -75,6 +75,13 @@ def extract_response_json(payload: dict[str, Any]) -> Any:
         raise PipelineError("unexpected chat completion payload: missing JSON answer") from exc
 
 
+def _check_images(images: list[str]) -> None:
+    if any(not isinstance(url, str) or not url.startswith(
+        ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+    ) for url in images):
+        raise _RequestError("images must be PNG, JPEG or WebP base64 data URLs")
+
+
 class _RequestError(PipelineError):
     def __init__(self, message: str, *, retryable: bool = False, retry_after: float | None = None):
         super().__init__(message)
@@ -136,7 +143,7 @@ class ChatClient:
 
     @classmethod
     def from_config(cls, config: LLMConfig) -> "ChatClient":
-        if not config.api_base_url:
+        if config.provider == "openai" and not config.api_base_url:
             raise PipelineError("missing required environment variable TW_LLM_API_BASE_URL")
         return cls(api_key=config.api_key_from_env(), config=config)
 
@@ -262,7 +269,7 @@ class ChatClient:
             if self.timing_path is not None:
                 append_timing(self.timing_path, {
                     "type": "llm_call", "task": task, "attempt": attempt, "outcome": outcome,
-                    "model": self.config.model, "reasoning_effort": self.config.reasoning_effort,
+                    "provider": self.config.provider, "model": self.config.model, "reasoning_effort": self.config.reasoning_effort,
                     "repair_of": sent_repair, "max_output_tokens": self.config.max_output_tokens,
                     "elapsed_seconds": round(perf_counter() - started, 3),
                     "network_seconds": round(network_seconds, 3),
@@ -310,8 +317,10 @@ class ChatClient:
         repair: dict[str, str] | None = None,
         images: list[str] | None = None,
     ) -> str:
-        responses = self.config.text_endpoint.rstrip("/") == "/responses"
-        if images and not responses:
+        anthropic = self.config.provider == "anthropic"
+        # The Anthropic transport converts this chat payload itself and attaches images there.
+        responses = not anthropic and self.config.text_endpoint.rstrip("/") == "/responses"
+        if images and not responses and not anthropic:
             raise _RequestError("image attachments require the /responses endpoint")
         payload = {
             "model": self.config.model,
@@ -328,6 +337,8 @@ class ChatClient:
         if self.config.reasoning_effort is not None:
             payload["reasoning_effort"] = self.config.reasoning_effort
         messages = payload["messages"]
+        if images and anthropic:
+            _check_images(images)
         if responses:
             payload["input"] = payload.pop("messages")
             payload["store"] = False
@@ -339,10 +350,7 @@ class ChatClient:
             if "reasoning_effort" in payload:
                 payload["reasoning"] = {"effort": payload.pop("reasoning_effort")}
             if images:
-                if any(not isinstance(url, str) or not url.startswith(
-                    ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
-                ) for url in images):
-                    raise _RequestError("images must be PNG, JPEG or WebP base64 data URLs")
+                _check_images(images)
                 messages[1]["content"] = [
                     {"type": "input_text", "text": messages[1]["content"]},
                     *({"type": "input_image", "image_url": url, "detail": "auto"} for url in images),
@@ -383,12 +391,41 @@ class ChatClient:
                 body = compact_json(payload)
         return body
 
+    def _post_anthropic(self, *, timeout_seconds: float | None, images: list[str] | None, **kwargs: Any) -> dict[str, Any]:
+        from .anthropic_provider import AnthropicTransport, request_params
+
+        if self.config.timeout_seconds <= 0 or self.config.max_request_chars < 1:
+            raise _RequestError("chat request configuration error: timeout and request-size limit must be positive")
+        if not self.config.model.strip():
+            raise _RequestError("chat request configuration error: model must be non-empty")
+        chat = json.loads(self._request_body(images=images, **kwargs))
+        params = request_params(chat, model=self.config.model, effort=self.config.reasoning_effort, images=images)
+        if getattr(self, "_anthropic", None) is None:
+            self._anthropic = AnthropicTransport(self.api_key)
+        schema = kwargs.get("response_schema")
+        payload = self._anthropic.send(params, request_error=_RequestError, schema=schema,
+                                       timeout_seconds=self.config.timeout_seconds if timeout_seconds is None else timeout_seconds)
+        message = payload["choices"][0]["message"]
+        if schema and message.get("content"):
+            from .anthropic_provider import restore_nulls
+
+            try:
+                answer = json.loads(message["content"])
+            except ValueError:
+                return payload  # the repair loop reports the unparsable answer
+            message["content"] = json.dumps(restore_nulls(answer, schema["schema"]), ensure_ascii=False)
+        return payload
+
     def _post(
         self, *, system_prompt: str, user_payload: Any, response_schema: dict[str, Any] | None,
         repair: dict[str, str] | None = None,
         timeout_seconds: float | None = None,
         images: list[str] | None = None,
     ) -> dict[str, Any]:
+        if self.config.provider == "anthropic":
+            return self._post_anthropic(system_prompt=system_prompt, user_payload=user_payload,
+                                        response_schema=response_schema, repair=repair,
+                                        timeout_seconds=timeout_seconds, images=images)
         url = f"{self.config.api_base_url.rstrip('/')}{self.config.text_endpoint}"
         try:
             address = urlsplit(url)
